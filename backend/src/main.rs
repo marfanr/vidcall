@@ -1,6 +1,8 @@
-use std::env;
+use std::{env};
 
 use tracing::info;
+
+use crate::models::conn;
 
 pub mod api;
 pub mod models;
@@ -23,10 +25,15 @@ fn handle_args() -> ArgsParsed {
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
+
+    conn::init_db().await?;
+
     let args = handle_args();
     if args.is_running_migration {
         // TODO: create migration
@@ -35,5 +42,7 @@ async fn main() -> std::io::Result<()> {
     }
     let server = api::server::ApiServer::default();
 
-    server.serve(8080).await
+    server.serve(8080).await?;
+
+    Ok(())
 }
