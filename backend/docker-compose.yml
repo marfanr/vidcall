@@ -1,0 +1,59 @@
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    container_name: patroni-etcd
+    restart: unless-stopped
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-cluster-state=new
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - backend
+
+  postgres:
+    image: ghcr.io/zalando/spilo-18:4.1-p2
+    container_name: postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      SCOPE: postgres-ha
+      ETCD3_HOST: etcd:2379
+
+      PGUSER_SUPERUSER: postgres
+      PGPASSWORD_SUPERUSER: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+
+      PGUSER_ADMIN: admin
+      PGPASSWORD_ADMIN: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+
+      PGUSER_STANDBY: standby
+      PGPASSWORD_STANDBY: ${REPLICATION_PASSWORD:?Set REPLICATION_PASSWORD}
+
+      SPILO_CONFIGURATION: |
+        postgresql:
+          parameters:
+            bg_mon.listen_address: 0.0.0.0
+    ports:
+      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:8008:8008"
+    volumes:
+      - postgres-data:/home/postgres/pgdata
+    depends_on:
+      - etcd
+    networks:
+      - backend
+
+networks:
+  backend:
+
+volumes:
+  etcd-data:
+  postgres-data:
