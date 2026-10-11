@@ -15,7 +15,7 @@ fn handle_args() -> ArgsParsed {
     let mut parsed = ArgsParsed::default();
     let args: Vec<String> = env::args().collect();
     for item in &args {
-        if (item.contains("migration")) {
+        if item.contains("migration") {
             parsed.is_running_migration = true;
         }
     }

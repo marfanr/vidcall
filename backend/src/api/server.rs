@@ -1,9 +1,4 @@
-use axum::{
-    Json, Router,
-    extract::{self, Request},
-    routing::{get, post},
-};
-
+use axum::{Router, routing::post};
 
 use tokio::net::TcpListener;
 use tracing::info;
@@ -11,8 +6,7 @@ use tracing::info;
 use crate::api::room;
 
 #[derive(Default)]
-struct ApiV1 {
-}
+struct ApiV1 {}
 
 impl ApiV1 {
     fn routes() -> Router {

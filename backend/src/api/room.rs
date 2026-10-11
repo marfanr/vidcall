@@ -1,32 +1,28 @@
 // create room
-use axum::Json;
+use axum::{Json, http::StatusCode};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use validator::Validate;
 
-use crate::api::ApiError;
+use crate::api::{ApiError, ValidateJson};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 pub struct CreateRoomReq {
-    name: Option<String>,
+    #[validate(length(min = 1, max = 64))]
+    name: String,
 }
 
 #[derive(Serialize)]
 pub struct CreateRoomRes {
-    token: Option<&'static str>
+    token: Option<&'static str>,
 }
 
 #[derive(Default)]
 pub struct V1 {}
 
 impl V1 {
-    pub async fn create_room(Json(req): Json<CreateRoomReq>) -> 
-    Result<Json<CreateRoomRes>, ApiError> {
-        if let Some(n) = req.name {
-            info!("req: {}", n);
-        }
-        Err(ApiError::NotFound)
-        // Ok(Json(CreateRoomRes {
-        //     token: None,
-        // }))
+    pub async fn create_room(
+        ValidateJson(r_): ValidateJson<CreateRoomReq>,
+    ) -> Result<(StatusCode, Json<CreateRoomRes>), ApiError> {
+        Ok((StatusCode::OK, Json(CreateRoomRes { token: None })))
     }
 }
