@@ -1,9 +1,10 @@
-use std::{borrow::Cow, fmt::Display};
+use std::{borrow::Cow, fmt::Display, str::FromStr, sync::Arc};
 
 use crate::api::{ApiError, FastJson, server::ServerState};
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::phc::SaltString};
 use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
 use tokio_postgres::error::SqlState;
-use tracing::{error, info, trace, warn};
+use tracing::{error, trace};
 use validator::Validate;
 
 #[derive(sonic_rs::Deserialize, Validate)]
@@ -20,7 +21,9 @@ struct UserRequest<'a> {
 }
 
 #[derive(sonic_rs::Serialize)]
-struct UserResponse {}
+struct UserResponse {
+    userid: String,
+}
 
 #[derive(Default)]
 pub struct V1;
@@ -72,19 +75,37 @@ impl V1 {
 
         req.validate().map_err(ApiError::Validation)?;
 
-        let db = _state.pool.get().await.map_err(poll_error)?;
+        // todo: move this
+        let argon2 = Argon2::new_with_secret(
+            b"haiya",
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::default(),
+        )
+        .expect("error to setup argon");
 
+        let db = _state.pool.get().await.map_err(poll_error)?;
         let id = uuid::Uuid::now_v7();
+
+        let salt = SaltString::generate();
+
+        let pw = argon2
+            .hash_password_with_salt(req.password.as_bytes(), &salt.to_salt())
+            .unwrap()
+            .to_string();
 
         let stmt = db
             .prepare_cached(
-                "INSERT INTO users (id, username, email, password) VALUES ($1, $2, $3, $4)",
+                "INSERT INTO users (id, username, email, password, salt) VALUES ($1, $2, $3, $4, $5)",
             )
             .await
             .map_err(db_error)?;
 
         let res = db
-            .execute(&stmt, &[&id, &req.username, &req.email, &req.password])
+            .execute(
+                &stmt,
+                &[&id, &req.username, &req.email, &pw, &salt.to_string()],
+            )
             .await
             .map_err(|e| {
                 let Some(db) = e.as_db_error() else {
@@ -93,17 +114,23 @@ impl V1 {
 
                 if *db.code() == SqlState::UNIQUE_VIOLATION {
                     return match db.constraint() {
-                        Some("users_username_key") => ApiError::Rejection(StatusCode::CONFLICT, "users already exists".into()),
-                        // Some("users_email_key") => ApiError::Rejection(StatusCode::CONFLICT, "users already exists"),
-                        _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into())
+                        Some("users_username_key") => {
+                            ApiError::Rejection(StatusCode::CONFLICT, "users already exists".into())
+                        }
+                        _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into()),
                     };
                 }
 
                 db_error(e)
             })?;
 
-            trace!("create_new_users: affected {} rows", res);
+        trace!("create_new_users: affected {} rows", res);
 
-        Ok((StatusCode::OK, FastJson(UserResponse {})))
+        Ok((
+            StatusCode::OK,
+            FastJson(UserResponse {
+                userid: id.to_string(),
+            }),
+        ))
     }
 }
