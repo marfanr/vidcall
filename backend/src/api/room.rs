@@ -1,43 +1,49 @@
 use axum::{
-    Json,
+    Json, Router,
     extract::{
         State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode, header::USER_AGENT},
     response::Response,
+    routing::{get, post},
 };
 use futures_util::{FutureExt, SinkExt, StreamExt, select};
 use sonic_rs::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 use validator::Validate;
 use webrtc::{
-    data_channel::{DataChannel, DataChannelEvent}, media_stream::track_remote::{TrackRemote, TrackRemoteEvent}, peer_connection::{
-        MediaEngine, // kalau tidak ter-export: rtc::peer_connection::configuration::media_engine::MediaEngine
-        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    data_channel::{DataChannel, DataChannelEvent},
+    media_stream::track_remote::{TrackRemote, TrackRemoteEvent},
+    peer_connection::{
+        MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
         RTCConfigurationBuilder, RTCIceConnectionState, RTCIceServer,
         RTCPeerConnectionIceErrorEvent, RTCPeerConnectionIceEvent, RTCSessionDescription,
         SettingEngineBuilder, crypto::providers::RingProvider,
-    }, runtime::TokioRuntime,
+    },
+    runtime::TokioRuntime,
 };
 
-use crate::api::{
-    ApiError::{self, Rejection},
-    FastJson, ValidateJson,
-    server::ServerState,
+use crate::{
+    api::{
+        ApiError::{self, Rejection},
+        FastJson, ValidateJson,
+        server::ServerState,
+    },
+    models::room::RoomId,
 };
 
 #[derive(Deserialize, Validate)]
-pub struct CreateRoomReq {
+struct CreateRoomReq {
     #[validate(length(min = 1, max = 64))]
     name: String,
 }
 
 #[derive(Serialize)]
-pub struct CreateRoomRes {
+struct CreateRoomRes {
     token: Option<&'static str>,
 }
 
@@ -46,7 +52,7 @@ pub struct V1 {}
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum WsMsg<'a> {
+enum WsMsg<'a> {
     Join {
         room: &'a str,
     },
@@ -54,7 +60,7 @@ pub enum WsMsg<'a> {
         sdp: String,
     },
     Answer {
-        sdp: String,
+        _sdp: String,
     },
     Candidate {
         candidate: String,
@@ -104,28 +110,28 @@ impl PeerConnectionEventHandler for PcHandler {
     }
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
-    info!("found track");
-    let con_id = self.con_id;
-    tokio::spawn(async move {
-        let mut count: u64 = 0;
-        while let Some(evt) = track.poll().await {
-            match evt {
-                TrackRemoteEvent::OnRtpPacket(_pkt) => {
-                    // TODO: forward ke subscriber (SFU)
-                    count += 1;
-                    if count % 300 == 0 {
-                        info!("conn {con_id}: {count} rtp packets");
+        info!("found track");
+        let con_id = self.con_id;
+        tokio::spawn(async move {
+            let mut count: u64 = 0;
+            while let Some(evt) = track.poll().await {
+                match evt {
+                    TrackRemoteEvent::OnRtpPacket(_pkt) => {
+                        // TODO: forward ke subscriber (SFU)
+                        count += 1;
+                        if count % 300 == 0 {
+                            info!("conn {con_id}: {count} rtp packets");
+                        }
                     }
+                    TrackRemoteEvent::OnEnded => {
+                        info!("conn {con_id}: track ended");
+                        break;
+                    }
+                    _ => {}
                 }
-                TrackRemoteEvent::OnEnded => {
-                    info!("conn {con_id}: track ended");
-                    break;
-                }
-                _ => {}
             }
-        }
-    });
-}
+        });
+    }
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         info!("data channel");
@@ -153,13 +159,16 @@ impl PeerConnectionEventHandler for PcHandler {
 impl<'a> WsMsg<'a> {
     async fn handle_join(room_id: &'a str, con_id: Uuid, state: &ServerState) {
         info!("join room={} from {}", room_id, con_id);
-        let mut rooms = state.rooms.write().await;
-        let Some(r) = rooms.iter_mut().find(|r| r.id.as_ref() == room_id) else {
-            warn!("room {} not found", room_id);
-            return;
-        };
 
-        r.connection.push(Arc::from(con_id.to_string()));
+        let _room = state
+            .rooms
+            .get(room_id)
+            .map(|r| Arc::clone(r.value()))
+            .ok_or_else(|| {
+                return
+            }).unwrap();
+
+        // r.connection.push(Arc::from(con_id.to_string()));
         info!("joined room {}", room_id);
     }
 
@@ -214,11 +223,9 @@ impl<'a> WsMsg<'a> {
             .await
             .map_err(|e| format!("local desc: {e}"))?;
 
-        for l in answer
-            .sdp
-            .lines()
-            .filter(|l| l.starts_with("m=") || l.starts_with("a=ice-ufrag") || l.starts_with("a=rtpmap"))
-        {
+        for l in answer.sdp.lines().filter(|l| {
+            l.starts_with("m=") || l.starts_with("a=ice-ufrag") || l.starts_with("a=rtpmap")
+        }) {
             info!("answer: {}", l.trim());
         }
 
@@ -236,33 +243,37 @@ impl<'a> WsMsg<'a> {
 
 // Api Version 1
 impl V1 {
-    pub async fn create_room(
+    pub fn routes() -> Router<ServerState> {
+        Router::new()
+            .route("/", post(Self::create_room))
+            // .route("/", get(Self::get_room))
+            .route("/ws", get(Self::ws))
+    }
+
+    async fn create_room(
         State(state): State<ServerState>,
         ValidateJson(r): ValidateJson<CreateRoomReq>,
     ) -> Result<(StatusCode, FastJson<CreateRoomRes>), ApiError> {
         {
-            let mut rooms = state.rooms.write().await;
-            if rooms.iter().any(|room| room.name.as_ref() == r.name) {
-                return Err(Rejection(StatusCode::OK, "name already exist".to_string()));
-            }
-            rooms.push(crate::models::room::Room {
-                id: Arc::from(Uuid::now_v7().to_string()),
-                name: Arc::from(r.name),
-                connection: Vec::new(),
-            });
-            info!("rooms : {:?}", &rooms);
+            // let id = RoomId::from_str(r.name.into()).unwrap();
+            // rooms.push(crate::models::room::Room {
+            //     id: Arc::from(Uuid::now_v7().to_string()),
+            //     name: Arc::from(r.name),
+            //     connection: Vec::new(),
+            // });
+            // info!("rooms : {:?}", &rooms);
         }
 
         Ok((StatusCode::OK, FastJson(CreateRoomRes { token: None })))
     }
 
-    pub async fn get_room(State(state): State<ServerState>) -> Result<Json<Vec<String>>, ApiError> {
-        let rooms = state.rooms.read().await;
-        let room_ids: Vec<String> = rooms.iter().map(|r| r.id.to_string()).collect();
-        Ok(Json(room_ids))
-    }
+    // async fn get_room(State(state): State<ServerState>) -> Result<Json<Vec<String>>, ApiError> {
+    //     // let rooms = state.rooms.read().await;
+    //     // let room_ids: Vec<String> = rooms.iter().map(|r| r.id.to_string()).collect();
+    //     Ok(Json())
+    // }
 
-    pub async fn ws(
+    async fn ws(
         ws: WebSocketUpgrade,
         headers: HeaderMap,
         State(state): State<ServerState>,
@@ -285,7 +296,7 @@ impl V1 {
     ) {
         let (mut sink, mut stream) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Message>(64);
-        state.connections.write().await.insert(con_id, tx.clone());
+        state.connections.insert(con_id, tx.clone());
 
         loop {
             tokio::select! {
@@ -345,7 +356,7 @@ impl V1 {
             }
         }
 
-        state.connections.write().await.remove(&con_id);
+        state.connections.remove(&con_id);
         state.pcs.write().await.remove(&con_id);
 
         info!("ws disconnected");

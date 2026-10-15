@@ -22,7 +22,7 @@ pub async fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>>
     cfg.user = Some("postgres".into());
     cfg.password = Some(password);
     cfg.ssl_mode = Some(SslMode::Require);
-    cfg.dbname = Some("postgres".into());
+    cfg.dbname = Some("vidcall".into());
     cfg.connect_timeout = Some(Duration::from_secs(5));
     cfg.manager = Some(ManagerConfig {
         recycling_method: deadpool_postgres::RecyclingMethod::Fast,

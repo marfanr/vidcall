@@ -1,9 +1,20 @@
-use std::{env, sync::Arc};
+use std::{
+    env,
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 
+use nanoid::nanoid;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use crate::{api::server::ServerState, models::conn};
+use crate::{
+    api::server::{ServerState, run_server},
+    models::{
+        conn,
+        room::{Room, RoomId},
+    },
+};
 
 pub mod api;
 pub mod models;
@@ -31,12 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_env("LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
     let pool = conn::init_db().await?;
-    let state = ServerState::default();
+    let state = ServerState::new(pool);
 
     let args = handle_args();
     if args.is_running_migration {
@@ -46,20 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     {
-        let mut rooms = state.rooms.write().await;
-
-        rooms.push(crate::models::room::Room {
-            id: Arc::from(String::from("IOCz1Y20EJhPbf9QPowM8")),
-            name: Arc::from("default"),
-            connection: Vec::new(),
-        });
-        info!("rooms : {:?}", &rooms);
+        let roomid = RoomId::from_str("blWGZU0eG9h0").unwrap();
+        info!("room id : {}", roomid);
+        state.rooms.insert(
+            roomid.clone(),
+            Arc::from(Room::new(roomid, RwLock::new(Arc::from("default")))),
+        );
     }
 
-    let mut server = api::server::ApiServer::default();
-    server.pool(pool);
-    server.state(state);
-
-    server.serve(8080).await?;
+    run_server(state, 8080).await?;
     Ok(())
 }

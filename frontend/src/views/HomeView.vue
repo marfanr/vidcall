@@ -2,7 +2,5 @@
 </script>
 
 <template>
-  <div>
-
-  </div>
+  s
 </template>

@@ -1,7 +1,7 @@
 use axum::{
     Json,
-    body::Body,
-    extract::{FromRequest, rejection::JsonRejection},
+    body::{Body, Bytes},
+    extract::{FromRequest},
     http::{StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
@@ -10,6 +10,7 @@ use validator::{Validate, ValidationErrors};
 
 pub mod room;
 pub mod server;
+pub mod user;
 
 // Error response
 #[derive(Debug)]
@@ -50,6 +51,7 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[doc = "simple used but not zero copy"]
 pub struct ValidateJson<T>(T);
 
 impl<S, T> FromRequest<S> for ValidateJson<T>
@@ -60,9 +62,13 @@ where
     type Rejection = ApiError;
 
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
-        let Json(v) = Json::<T>::from_request(req, state)
+        let b = Bytes::from_request(req, state)
             .await
-            .map_err(|r: JsonRejection| ApiError::Rejection(r.status(), r.body_text()))?;
+            .map_err(|r| ApiError::Rejection(StatusCode::BAD_REQUEST, r.to_string()))?;
+
+        let v= sonic_rs::from_slice::<T>(&b)
+            .map_err(|r| ApiError::Rejection(StatusCode::BAD_REQUEST, r.to_string()))?;
+
         v.validate().map_err(ApiError::Validation)?;
         Ok(Self(v))
     }
@@ -72,7 +78,7 @@ pub struct FastJson<T>(pub T);
 
 impl<T: sonic_rs::Serialize> IntoResponse for FastJson<T> {
     fn into_response(self) -> Response<Body> {
-        match sonic_rs::to_string(&self.0) {
+        match sonic_rs::to_vec(&self.0) {
             Ok(body) => Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")

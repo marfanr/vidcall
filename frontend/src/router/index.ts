@@ -13,6 +13,9 @@ const router = createRouter({
     {
       path: '/signin',
       component: SigninView,
+      meta: {
+        title: 'Sign-in',
+      },
     },
     {
       path: '/meet/:id',
@@ -20,6 +23,18 @@ const router = createRouter({
       component: VideoCallView,
     },
   ],
+})
+
+router.beforeEach((to, from, next) => {
+  const titleFromParams = to.params?.pageTitle
+
+  if (titleFromParams) {
+    document.title = `${titleFromParams} - ${document.title}`
+  } else {
+    document.title = String(to.meta?.title || 'Default Title')
+  }
+
+  next()
 })
 
 export default router

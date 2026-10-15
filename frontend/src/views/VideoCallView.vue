@@ -2,7 +2,8 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { PhoneOffIcon } from 'lucide-vue-next'
 
-const ROOM_ID = 'IOCz1Y20EJhPbf9QPowM8'
+
+const ROOM_ID = 'blWGZU0eG9h0'
 
 let localStream: MediaStream | null = null
 const localVideoRef = ref<HTMLVideoElement | null>(null)

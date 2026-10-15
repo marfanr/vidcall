@@ -1,14 +1,14 @@
 use axum::{
     Router,
-    extract::ws::{Message},
-    routing::{get, post},
+    extract::ws::{Message}
 };
 
+use dashmap::DashMap;
 use deadpool_postgres::Pool;
 use tokio::{net::TcpListener, sync::mpsc};
 use tracing::info;
 
-use crate::{api::room, models::room::Room};
+use crate::{api::{room, user}, models::room::{Room, RoomId}};
 
 #[derive(Default)]
 struct ApiV1 {}
@@ -16,43 +16,38 @@ struct ApiV1 {}
 impl ApiV1 {
     fn routes() -> Router<ServerState> {
         Router::new()
-            .route("/room", post(room::V1::create_room))
-            .route("/room", get(room::V1::get_room))
-            .route("/room/ws", get(room::V1::ws))
+            .nest("/room", room::V1::routes())
+            .nest("/user", user::V1::routes())
     }
 }
 
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ServerState {
-    pub rooms: Arc<RwLock<Vec<Room>>>,
-    pub connections: Arc<RwLock<HashMap<uuid::Uuid, mpsc::Sender<Message>>>>,
+    pub rooms: Arc<DashMap<RoomId, Arc<Room>>>,
+    pub connections: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
     pub pcs: Arc<RwLock<HashMap<uuid::Uuid,  Arc<dyn webrtc::peer_connection::PeerConnection>>>>,
+    pub pool: Pool,
 }
 
-#[derive(Default, Clone)]
-pub struct ApiServer {
-    pool: Option<Pool>,
-    state: Option<ServerState>,
+
+impl ServerState {
+    pub fn new(pool: Pool) -> Self {
+        Self {
+            rooms: Arc::default(),
+            connections: Arc::default(),
+            pcs: Arc::default(),
+            pool,
+        }
+    }
 }
 
-impl ApiServer {
-    pub fn pool(&mut self, pool: Pool) {
-        self.pool = Some(pool);
-    }
+pub async fn run_server(state: ServerState, port: u16) -> std::io::Result<()> {
+    let app = Router::new().nest("/v1", ApiV1::routes()).with_state(state);
 
-    pub fn state(&mut self, state: ServerState) {
-        self.state = Some(state);
-    }
-
-    pub async fn serve(&self, port: u16) -> std::io::Result<()> {
-        let state = self.state.clone().unwrap_or_default();
-        let app = Router::new().nest("/v1", ApiV1::routes()).with_state(state);
-
-        let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-        info!("listen at port {} ...", port);
-        axum::serve(listener, app).await
-    }
+    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    info!("listen at port {} ...", port);
+    axum::serve(listener, app).await
 }
