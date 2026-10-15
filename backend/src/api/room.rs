@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use axum::{
     Json,
     extract::{
@@ -8,12 +7,28 @@ use axum::{
     http::{HeaderMap, StatusCode, header::USER_AGENT},
     response::Response,
 };
+use futures_util::{FutureExt, SinkExt, StreamExt, select};
 use sonic_rs::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 use validator::Validate;
+use webrtc::{
+    data_channel::{DataChannel, DataChannelEvent}, media_stream::track_remote::{TrackRemote, TrackRemoteEvent}, peer_connection::{
+        MediaEngine, // kalau tidak ter-export: rtc::peer_connection::configuration::media_engine::MediaEngine
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+        RTCConfigurationBuilder, RTCIceConnectionState, RTCIceServer,
+        RTCPeerConnectionIceErrorEvent, RTCPeerConnectionIceEvent, RTCSessionDescription,
+        SettingEngineBuilder, crypto::providers::RingProvider,
+    }, runtime::TokioRuntime,
+};
 
-use crate::api::{ApiError::{self, Rejection}, FastJson, ValidateJson, server::ServerState};
+use crate::api::{
+    ApiError::{self, Rejection},
+    FastJson, ValidateJson,
+    server::ServerState,
+};
 
 #[derive(Deserialize, Validate)]
 pub struct CreateRoomReq {
@@ -32,15 +47,194 @@ pub struct V1 {}
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMsg<'a> {
-    Join { room: &'a str },
-    Offer { sdp: String },
-    Answer { sdp: String },
-    Candidate { candidate: &'a str },
+    Join {
+        room: &'a str,
+    },
+    Offer {
+        sdp: String,
+    },
+    Answer {
+        sdp: String,
+    },
+    Candidate {
+        candidate: String,
+        mid: Option<String>,
+        line_index: Option<u16>,
+        username_fragment: Option<String>,
+    },
     Leave,
 }
 
-impl WsMsg<'_> {}
+struct PcHandler {
+    #[allow(dead_code)]
+    con_id: Uuid,
+    conn: mpsc::Sender<Message>,
+}
 
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for PcHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        let init = match event.candidate.to_json() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("candidate to_json: {e}");
+                return;
+            }
+        };
+        info!("ice detected : {}", init.candidate);
+        let msg = sonic_rs::json!({
+            "type": "ice",
+            "candidate": &init.candidate,
+            "sdpMid": &init.sdp_mid,
+            "sdpMLineIndex": &init.sdp_mline_index,
+            "usernameFragment": &init.username_fragment,
+        })
+        .to_string();
+        if self.conn.send(Message::Text(msg.into())).await.is_err() {
+            warn!("ws closed, drop ice candidate");
+        }
+    }
+
+    async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+        info!("on ice state change {}", state.to_owned());
+    }
+
+    async fn on_ice_candidate_error(&self, event: RTCPeerConnectionIceErrorEvent) {
+        warn!("ice candidate error: {:?}", event);
+    }
+
+    async fn on_track(&self, track: Arc<dyn TrackRemote>) {
+    info!("found track");
+    let con_id = self.con_id;
+    tokio::spawn(async move {
+        let mut count: u64 = 0;
+        while let Some(evt) = track.poll().await {
+            match evt {
+                TrackRemoteEvent::OnRtpPacket(_pkt) => {
+                    // TODO: forward ke subscriber (SFU)
+                    count += 1;
+                    if count % 300 == 0 {
+                        info!("conn {con_id}: {count} rtp packets");
+                    }
+                }
+                TrackRemoteEvent::OnEnded => {
+                    info!("conn {con_id}: track ended");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        info!("data channel");
+        tokio::spawn(Box::pin(async move {
+            loop {
+                select! {
+                    event = dc.poll().fuse() => {
+                        match event {
+                            Some(DataChannelEvent::OnBufferedAmountHigh) => {
+                                info!("data channel: buffered amount high");
+                            }
+                            Some(DataChannelEvent::OnBufferedAmountLow) => {
+                                info!("data channel: buffered amount low");
+                            }
+                            Some(DataChannelEvent::OnClose) | None => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }));
+    }
+}
+
+impl<'a> WsMsg<'a> {
+    async fn handle_join(room_id: &'a str, con_id: Uuid, state: &ServerState) {
+        info!("join room={} from {}", room_id, con_id);
+        let mut rooms = state.rooms.write().await;
+        let Some(r) = rooms.iter_mut().find(|r| r.id.as_ref() == room_id) else {
+            warn!("room {} not found", room_id);
+            return;
+        };
+
+        r.connection.push(Arc::from(con_id.to_string()));
+        info!("joined room {}", room_id);
+    }
+
+    async fn handle_offer(
+        sdp: &str,
+        con_id: Uuid,
+        state: &ServerState,
+        self_sink: mpsc::Sender<Message>,
+    ) -> Result<(), String> {
+        let config = RTCConfigurationBuilder::default()
+            .with_ice_servers(vec![RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                ..Default::default()
+            }])
+            .build();
+
+        let se = SettingEngineBuilder::default()
+            .with_crypto_provider(Arc::new(RingProvider::new()))
+            .with_allow_insecure_verification_algorithm(true)
+            .build();
+
+        let mut media_engine = MediaEngine::default();
+        media_engine
+            .register_default_codecs()
+            .map_err(|e| format!("register codecs: {e}"))?;
+
+        let pc = PeerConnectionBuilder::new()
+            .with_configuration(config)
+            .with_media_engine(media_engine)
+            .with_runtime(Arc::new(TokioRuntime))
+            .with_handler(Arc::new(PcHandler {
+                con_id,
+                conn: self_sink.clone(),
+            }))
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .with_setting_engine(se)
+            .build()
+            .await
+            .map_err(|e| format!("build pc: {e}"))?;
+
+        let offer = RTCSessionDescription::offer(sdp.to_owned())
+            .map_err(|e| format!("parse offer: {e}"))?;
+        pc.set_remote_description(offer)
+            .await
+            .map_err(|e| format!("remote desc: {e}"))?;
+
+        let answer = pc
+            .create_answer(None)
+            .await
+            .map_err(|e| format!("create answer: {e}"))?;
+        pc.set_local_description(answer.clone())
+            .await
+            .map_err(|e| format!("local desc: {e}"))?;
+
+        for l in answer
+            .sdp
+            .lines()
+            .filter(|l| l.starts_with("m=") || l.starts_with("a=ice-ufrag") || l.starts_with("a=rtpmap"))
+        {
+            info!("answer: {}", l.trim());
+        }
+
+        self_sink
+            .send(Message::text(
+                sonic_rs::json!({ "type": "answer", "sdp": answer.sdp }).to_string(),
+            ))
+            .await
+            .map_err(|e| format!("send answer: {e}"))?;
+
+        state.pcs.write().await.insert(con_id, Arc::from(pc));
+        Ok(())
+    }
+}
+
+// Api Version 1
 impl V1 {
     pub async fn create_room(
         State(state): State<ServerState>,
@@ -48,9 +242,7 @@ impl V1 {
     ) -> Result<(StatusCode, FastJson<CreateRoomRes>), ApiError> {
         {
             let mut rooms = state.rooms.write().await;
-            if rooms.iter().any(
-                |room| room.id.as_ref() == r.name
-            ) {
+            if rooms.iter().any(|room| room.name.as_ref() == r.name) {
                 return Err(Rejection(StatusCode::OK, "name already exist".to_string()));
             }
             rooms.push(crate::models::room::Room {
@@ -80,41 +272,82 @@ impl V1 {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("Unknown")
             .to_owned();
-        
+
         let con_id = Uuid::now_v7();
         ws.on_upgrade(move |socket| Self::handle_socket(socket, user_agent, state, con_id))
     }
 
-    async fn handle_socket(mut socket: WebSocket, user_agent: String, state: ServerState, con_id: Uuid) {
-        while let Some(msg) = socket.recv().await {
-            match msg {
-                Ok(Message::Text(t)) => match sonic_rs::from_slice::<WsMsg<'_>>(t.as_bytes()) {
-                    Ok(WsMsg::Join { room}) => {
-                        info!("join room={} from {}", room, con_id);
-                        let rooms = state.rooms.read().await;
+    async fn handle_socket(
+        socket: WebSocket,
+        _user_agent: String,
+        state: ServerState,
+        con_id: Uuid,
+    ) {
+        let (mut sink, mut stream) = socket.split();
+        let (tx, mut rx) = mpsc::channel::<Message>(64);
+        state.connections.write().await.insert(con_id, tx.clone());
 
-                        let exists = rooms.iter().any(|r| r.id.as_ref() == room);
-                        if !exists {
-                            continue;
+        loop {
+            tokio::select! {
+                incoming = stream.next() => {
+                    match incoming {
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                        Some(Ok(Message::Text(msg))) => {
+                            match sonic_rs::from_slice::<WsMsg<'_>>(msg.as_bytes()) {
+                                Ok(WsMsg::Join { room }) => {
+                                    WsMsg::handle_join(room, con_id, &state).await;
+                                }
+                                Ok(WsMsg::Offer { sdp }) => {
+                                    if let Err(e) = WsMsg::handle_offer(&sdp, con_id, &state, tx.clone()).await {
+                                        warn!("handle_offer: {e}");
+                                    }
+                                }
+                                Ok(WsMsg::Candidate { candidate, line_index, mid, username_fragment }) => {
+                                    info!("received candidate: {}", candidate);
+                                    let pc = state.pcs.read().await.get(&con_id).cloned();
+                                    match pc {
+                                        Some(pc) => {
+                                            if let Err(e) = pc
+                                                .add_ice_candidate(webrtc::peer_connection::RTCIceCandidateInit {
+                                                    candidate,
+                                                    sdp_mid: mid,
+                                                    sdp_mline_index: line_index,
+                                                    username_fragment,
+                                                    url: None,
+                                                })
+                                                .await
+                                            {
+                                                warn!("add_ice_candidate: {e}");
+                                            }
+                                        }
+                                        None => warn!("candidate before pc exists"),
+                                    }
+                                }
+                                Ok(WsMsg::Leave) => break,
+                                Ok(_) => {}
+                                Err(e) => warn!("bad ws msg: {e}"),
+                            }
                         }
+                        Some(Ok(_)) => {}
+                    }
+                }
 
-                        info!("joined room {}", room);
+                outgoing = rx.recv() => {
+                    match outgoing {
+                        Some(msg) => {
+                            if sink.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
                     }
-                    Ok(WsMsg::Offer { sdp }) => {
-                        info!("received offer: {} bytes", sdp.len());
-                    }
-                    Ok(WsMsg::Candidate { candidate }) => {
-                        info!("received candidate: {} bytes", candidate.len());
-                    }
-                    Ok(WsMsg::Leave) => break,
-                    Ok(_) => {}
-                    Err(e) => { warn!("err : {}", e)}
-                },
-                Ok(Message::Close(_)) | Err(_) => break,
-                Ok(_) => {}
+                }
             }
         }
 
-        info!("ws disconnected: {}", user_agent);
+        state.connections.write().await.remove(&con_id);
+        state.pcs.write().await.remove(&con_id);
+
+        info!("ws disconnected");
     }
 }

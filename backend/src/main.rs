@@ -1,7 +1,7 @@
 use std::{env, sync::Arc};
 
 use tracing::info;
-use uuid::Uuid;
+use tracing_subscriber::EnvFilter;
 
 use crate::{api::server::ServerState, models::conn};
 
@@ -30,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let pool = conn::init_db().await?;
@@ -42,12 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!("run migrations");
         return Ok(());
     }
-    
+
     {
         let mut rooms = state.rooms.write().await;
-       
+
         rooms.push(crate::models::room::Room {
-            id: Arc::from(String::from("01a132ad-21dd-745c-96ef-322546ed33be")),
+            id: Arc::from(String::from("IOCz1Y20EJhPbf9QPowM8")),
             name: Arc::from("default"),
             connection: Vec::new(),
         });
@@ -58,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     server.pool(pool);
     server.state(state);
 
-    
     server.serve(8080).await?;
     Ok(())
 }
