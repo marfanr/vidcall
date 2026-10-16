@@ -1,10 +1,13 @@
-use std::{borrow::Cow, fmt::Display, str::FromStr, sync::Arc};
+use std::borrow::Cow;
 
-use crate::api::{ApiError, FastJson, server::ServerState};
-use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version, password_hash::phc::SaltString};
+use crate::{
+    api::{ApiError, FastJson, db_error, poll_error, server::ServerState},
+    utils::get_argon,
+};
+use argon2::{PasswordHasher, password_hash::phc::SaltString};
 use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
 use tokio_postgres::error::SqlState;
-use tracing::{error, trace};
+use tracing::trace;
 use validator::Validate;
 
 #[derive(sonic_rs::Deserialize, Validate)]
@@ -14,6 +17,7 @@ struct UserRequest<'a> {
     username: Cow<'a, str>,
 
     #[serde(borrow)]
+    #[validate(email)]
     email: Cow<'a, str>,
 
     #[serde(borrow)]
@@ -27,39 +31,6 @@ struct UserResponse {
 
 #[derive(Default)]
 pub struct V1;
-
-fn unavailable(e: impl Display) -> ApiError {
-    ApiError::Rejection(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "service unavailable".to_string(),
-    )
-}
-
-fn poll_error(e: impl Display) -> ApiError {
-    error!("db pool: {e}");
-    ApiError::Rejection(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "service unavailable".to_string(),
-    )
-}
-
-fn db_error(e: tokio_postgres::Error) -> ApiError {
-    match e.as_db_error() {
-        Some(db) => error!(
-            sqlstate = db.code().code(),
-            message = db.message(),
-            detail = ?db.detail(),
-            table = ?db.table(),
-            column = ?db.column(),
-            constraint = ?db.constraint(),
-            "db error"
-        ),
-        // bukan error dari server (koneksi putus, serialisasi parameter, dll.)
-        None => error!(error = ?e, source = ?std::error::Error::source(&e), "db error"),
-    }
-
-    unavailable(e)
-}
 
 impl V1 {
     pub fn routes() -> Router<ServerState> {
@@ -76,13 +47,7 @@ impl V1 {
         req.validate().map_err(ApiError::Validation)?;
 
         // todo: move this
-        let argon2 = Argon2::new_with_secret(
-            b"haiya",
-            Algorithm::Argon2id,
-            Version::V0x13,
-            Params::default(),
-        )
-        .expect("error to setup argon");
+        let argon2 = get_argon();
 
         let db = _state.pool.get().await.map_err(poll_error)?;
         let id = uuid::Uuid::now_v7();

@@ -24,3 +24,9 @@ nanoid = "0.5.0"
 dashmap = "6.2.1"
 arc-swap = "1.9.2"
 argon2 = "0.6.0"
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace"] }
+jemallocator = "0.5.4"
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+cookie = "0.18.2"
+

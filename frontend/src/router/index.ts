@@ -9,6 +9,9 @@ const router = createRouter({
     {
       path: '/',
       component: HomeView,
+      meta: {
+        title: 'Home',
+      },
     },
     {
       path: '/signin',
@@ -21,20 +24,23 @@ const router = createRouter({
       path: '/meet/:id',
       name: 'video-call',
       component: VideoCallView,
+      meta: {
+        title: 'Video Call',
+      },
     },
   ],
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach((to) => {
   const titleFromParams = to.params?.pageTitle
 
-  if (titleFromParams) {
-    document.title = `${titleFromParams} - ${document.title}`
-  } else {
-    document.title = String(to.meta?.title || 'Default Title')
-  }
+  const title = titleFromParams
+    ? String(titleFromParams)
+    : String(to.meta?.title || 'Default Title')
 
-  next()
+  document.title = `${title} | VidCall`
+
+  return true
 })
 
 export default router

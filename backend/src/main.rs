@@ -4,7 +4,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use nanoid::nanoid;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +18,7 @@ use crate::{
 pub mod api;
 pub mod models;
 pub mod sfu;
+pub mod utils;
 
 #[derive(Default)]
 struct ArgsParsed {
@@ -41,9 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("LOG").unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_env("LOG").unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     let pool = conn::init_db().await?;
@@ -56,6 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
 
+    // ONLY FOR DEBUGGING PURPOSE
+    // will be removed later
     {
         let roomid = RoomId::from_str("blWGZU0eG9h0").unwrap();
         info!("room id : {}", roomid);
@@ -68,3 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_server(state, 8080).await?;
     Ok(())
 }
+
+
+
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;

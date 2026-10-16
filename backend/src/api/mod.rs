@@ -1,13 +1,17 @@
+use std::fmt::Display;
+
 use axum::{
     Json,
     body::{Body, Bytes},
-    extract::{FromRequest},
+    extract::FromRequest,
     http::{StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use serde::de::DeserializeOwned;
+use tracing::error;
 use validator::{Validate, ValidationErrors};
 
+pub mod auth;
 pub mod room;
 pub mod server;
 pub mod user;
@@ -66,7 +70,7 @@ where
             .await
             .map_err(|r| ApiError::Rejection(StatusCode::BAD_REQUEST, r.to_string()))?;
 
-        let v= sonic_rs::from_slice::<T>(&b)
+        let v = sonic_rs::from_slice::<T>(&b)
             .map_err(|r| ApiError::Rejection(StatusCode::BAD_REQUEST, r.to_string()))?;
 
         v.validate().map_err(ApiError::Validation)?;
@@ -87,4 +91,37 @@ impl<T: sonic_rs::Serialize> IntoResponse for FastJson<T> {
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "failed json").into_response(),
         }
     }
+}
+
+pub fn unavailable(e: impl Display) -> ApiError {
+    ApiError::Rejection(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "service unavailable".to_string(),
+    )
+}
+
+pub fn poll_error(e: impl Display) -> ApiError {
+    error!("db pool: {e}");
+    ApiError::Rejection(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "service unavailable".to_string(),
+    )
+}
+
+pub fn db_error(e: tokio_postgres::Error) -> ApiError {
+    match e.as_db_error() {
+        Some(db) => error!(
+            sqlstate = db.code().code(),
+            message = db.message(),
+            detail = ?db.detail(),
+            table = ?db.table(),
+            column = ?db.column(),
+            constraint = ?db.constraint(),
+            "db error"
+        ),
+        // bukan error dari server (koneksi putus, serialisasi parameter, dll.)
+        None => error!(error = ?e, source = ?std::error::Error::source(&e), "db error"),
+    }
+
+    unavailable(e)
 }

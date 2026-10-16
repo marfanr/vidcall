@@ -1,22 +1,58 @@
 <script setup lang="ts">
 import { WebcamIcon } from "lucide-vue-next";
 import { ref } from "vue";
+import { api } from "@/lib/axios";
+import { useForm, useField } from "vee-validate";
+import { toTypedSchema } from "@vee-validate/zod";
+import * as z from "zod";
 
-const email = ref("");
-const password = ref("");
 const showPassword = ref(false);
 const loading = ref(false);
 
-async function onSubmit() {
+const { handleSubmit, setFieldError } = useForm({
+  validationSchema: toTypedSchema(
+    z.object({
+      email: z.string().min(1, "Email is required").email("Please enter a valid email address"),
+      password: z.string().min(1, "Password is required")
+    })
+  )
+});
+
+const { value: email, errorMessage: emailError } = useField<string>("email");
+const { value: password, errorMessage: passwordError } = useField<string>("password");
+
+const onSubmit = handleSubmit(async (values) => {
   if (loading.value) return;
   loading.value = true;
   try {
-    // TODO: panggil API login
-    console.log({ email: email.value, password: password.value });
-  } finally {
+    const res = await api.post(
+      "/auth/signin",
+      {
+        "email": values.email,
+        "password": values.password
+      },
+
+    )
+    console.log("SUCCESS:", res.data)
+  }
+  catch (err) {
+    const axiosErr = err as { response?: { data?: { error?: string }; status?: number } };
+    const message = axiosErr.response?.data?.error || "Something went wrong";
+    if (message === "invalid credentials") {
+      setFieldError("email", message);
+      setFieldError("password", message);
+    } else if (axiosErr.response?.status === 401) {
+      setFieldError("email", message);
+      setFieldError("password", message);
+    } else {
+      setFieldError("email", message);
+    }
+  }
+  finally {
     loading.value = false;
   }
-}
+});
+
 </script>
 
 <template>
@@ -86,13 +122,18 @@ async function onSubmit() {
             <span class="h-px flex-1 bg-slate-200"></span> -->
           </div>
 
-          <form class="flex flex-col gap-3" @submit.prevent="onSubmit">
-            <input v-model="email" type="email" autocomplete="email" required placeholder="Email"
-              class="h-11 w-full rounded-lg border border-slate-200 bg-white px-4 text-sm placeholder:text-slate-400 transition focus:border-[#1d4cff] focus:outline-none focus:ring-2 focus:ring-[#1d4cff]/20" />
+          <form class="flex flex-col gap-3" @submit="onSubmit">
+            <div>
+              <input v-model="email" type="email" autocomplete="email" placeholder="Email"
+                class="h-11 w-full rounded-lg border border-slate-200 bg-white px-4 text-sm placeholder:text-slate-400 transition focus:border-[#1d4cff] focus:outline-none focus:ring-2 focus:ring-[#1d4cff]/20" />
+              <p v-if="emailError" class="mt-1 text-xs text-red-500">{{ emailError }}</p>
+            </div>
+
             <div class="relative">
               <input v-model="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password"
-                required placeholder="Password"
+                placeholder="Password"
                 class="h-11 w-full rounded-lg border border-slate-200 bg-white pl-4 pr-11 text-sm placeholder:text-slate-400 transition focus:border-[#1d4cff] focus:outline-none focus:ring-2 focus:ring-[#1d4cff]/20" />
+
               <button type="button"
                 class="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 hover:text-slate-700"
                 :aria-label="showPassword ? 'Hide password' : 'Show password'" @click="showPassword = !showPassword">
@@ -107,6 +148,7 @@ async function onSubmit() {
                     d="M17.940 17.940A10.940 10.940 0 0 1 12 19c-6.500 0-10-7-10-7a18.500 18.500 0 0 1 5.060-5.940M9.900 4.240A9.120 9.120 0 0 1 12 5c6.500 0 10 7 10 7a18.500 18.500 0 0 1-2.160 3.190M1 1l22 22" />
                 </svg>
               </button>
+              <p v-if="passwordError" class="absolute -bottom-5 left-0 text-xs text-red-500">{{ passwordError }}</p>
             </div>
 
             <div class="flex justify-end">
