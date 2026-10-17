@@ -5,6 +5,7 @@ import { api } from "@/lib/axios";
 import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import * as z from "zod";
+import { useAuthStore } from "@/stores/auth";
 
 const showPassword = ref(false);
 const loading = ref(false);
@@ -31,9 +32,10 @@ const onSubmit = handleSubmit(async (values) => {
         "email": values.email,
         "password": values.password
       },
-
     )
-    console.log("SUCCESS:", res.data)
+
+    const auth = useAuthStore();
+    auth.setAccessToken(res.data?.token)
   }
   catch (err) {
     const axiosErr = err as { response?: { data?: { error?: string }; status?: number } };
@@ -98,23 +100,6 @@ const onSubmit = handleSubmit(async (values) => {
             <h1 class="text-2xl font-semibold tracking-tight">Login to your account</h1>
             <p class="mt-2 text-sm text-slate-400">Enter your email below to login to your account</p>
           </div>
-
-          <!-- <div class="mt-8 grid grid-cols-2 gap-3">
-            <button type="button"
-              class="flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-medium transition hover:bg-slate-50">
-              <svg class="size-4" viewBox="0 0 24 24">
-                <path fill="#4285F4"
-                  d="M22.5 12.2c0-.8-.1-1.5-.2-2.2H12v4.2h5.9a5 5 0 0 1-2.2 3.3v2.7h3.5c2.1-1.9 3.3-4.7 3.3-8z" />
-                <path fill="#34A853"
-                  d="M12 23c3 0 5.4-1 7.2-2.7l-3.5-2.7c-1 .7-2.200 1.100-3.700 1.100-2.800 0-5.200-1.900-6-4.500H2.400v2.800A11 11 0 0 0 12 23z" />
-                <path fill="#FBBC05"
-                  d="M6 14.200a6.600 6.600 0 0 1 0-4.200V7.200H2.400a11 11 0 0 0 0 9.800L6 14.200z" />
-                <path fill="#EA4335"
-                  d="M12 5.400c1.600 0 3 .6 4.100 1.600l3.100-3.100A11 11 0 0 0 2.400 7.200L6 10c.800-2.600 3.200-4.600 6-4.600z" />
-              </svg>
-              Google
-            </button>
-          </div> -->
 
           <div class="my-6 flex items-center gap-3 text-xs text-slate-400">
             <!-- <span class="h-px flex-1 bg-slate-200"></span>
