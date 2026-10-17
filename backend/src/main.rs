@@ -13,6 +13,7 @@ use crate::{
         conn,
         room::{Room, RoomId},
     },
+    utils::init_keys,
 };
 
 pub mod api;
@@ -44,7 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_env_filter(EnvFilter::try_from_env("LOG").unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
-    let pool = conn::init_db().await?;
+    init_keys();
+    let pool = conn::init_db()?;
     let state = ServerState::new(pool);
 
     let args = handle_args();
@@ -68,8 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_server(state, 8080).await?;
     Ok(())
 }
-
-
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;

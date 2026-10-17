@@ -12,10 +12,11 @@ use dashmap::DashMap;
 use deadpool_postgres::Pool;
 use tokio::{net::TcpListener, sync::mpsc};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{Level, info};
+use tracing::info;
 
 use crate::{
-    api::v1, models::room::{Room, RoomId},
+    api::v1,
+    models::room::{Room, RoomId},
 };
 
 #[derive(Default)]
@@ -30,14 +31,13 @@ impl ApiV1 {
     }
 }
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use std::{sync::Arc, time::Duration};
 
 #[derive(Clone)]
 pub struct ServerState {
     pub rooms: Arc<DashMap<RoomId, Arc<Room>>>,
     pub connections: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
-    pub pcs: Arc<RwLock<HashMap<uuid::Uuid, Arc<dyn webrtc::peer_connection::PeerConnection>>>>,
+    pub pcs: Arc<DashMap<uuid::Uuid, Arc<dyn webrtc::peer_connection::PeerConnection>>>,
     pub pool: Pool,
 }
 

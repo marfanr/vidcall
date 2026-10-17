@@ -34,8 +34,13 @@ const onSubmit = handleSubmit(async (values) => {
       },
     )
 
-    const auth = useAuthStore();
-    auth.setAccessToken(res.data?.token)
+    const auth = useAuthStore()
+    const { accessToken, refreshToken } = res.data ?? {}
+    if (accessToken && refreshToken) {
+      auth.setTokens(accessToken, refreshToken)
+    } else if (accessToken) {
+      auth.setAccessToken(accessToken)
+    }
   }
   catch (err) {
     const axiosErr = err as { response?: { data?: { error?: string }; status?: number } };

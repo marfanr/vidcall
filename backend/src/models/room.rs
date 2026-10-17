@@ -1,12 +1,16 @@
 // will be moved to sfu
-use std::{fmt, str::FromStr, sync::{Arc, RwLock}};
+use std::{
+    fmt,
+    str::FromStr,
+    sync::{Arc, RwLock},
+};
 
 use arc_swap::ArcSwap;
 use axum::extract::ws::Message;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use webrtc::peer_connection::{PeerConnection};
+use webrtc::peer_connection::PeerConnection;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidRoomId;
@@ -42,7 +46,11 @@ impl FromStr for RoomId {
         let valid = s.len() == Self::LEN
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        if valid { Ok(Self(s.into())) } else { Err(InvalidRoomId) }
+        if valid {
+            Ok(Self(s.into()))
+        } else {
+            Err(InvalidRoomId)
+        }
     }
 }
 
@@ -81,7 +89,7 @@ pub struct Peer {
 pub struct Room {
     pub id: RoomId,
     pub name: RwLock<Arc<str>>,
-    pub peers: ArcSwap<Vec<Peer>>
+    pub peers: ArcSwap<Vec<Peer>>,
 }
 
 impl Room {
@@ -93,7 +101,7 @@ impl Room {
         }
     }
 
-    pub fn add_peer(&self, peer: Arc<Peer>) {
+    pub fn add_peer(&self, _peer: Arc<Peer>) {
         // self.peers.insert(peer.id, peer);
     }
 

@@ -96,7 +96,7 @@ impl PeerConnectionEventHandler for PcHandler {
     }
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
-        info!("on ice state change {}", state.to_owned());
+        info!("on ice state change {}", state.clone());
     }
 
     async fn on_ice_candidate_error(&self, event: RTCPeerConnectionIceErrorEvent) {
@@ -113,7 +113,7 @@ impl PeerConnectionEventHandler for PcHandler {
                     TrackRemoteEvent::OnRtpPacket(_pkt) => {
                         // TODO: forward ke subscriber (SFU)
                         count += 1;
-                        if count % 300 == 0 {
+                        if count.is_multiple_of(300) {
                             info!("conn {con_id}: {count} rtp packets");
                         }
                     }
@@ -154,12 +154,9 @@ impl<'a> WsMsg<'a> {
     async fn handle_join(room_id: &'a str, con_id: Uuid, state: &ServerState) {
         info!("join room={} from {}", room_id, con_id);
 
-        let _room = state
-            .rooms
-            .get(room_id)
-            .map(|r| Arc::clone(r.value()))
-            .ok_or_else(|| return)
-            .unwrap();
+        let Some(_room) = state.rooms.get(room_id).map(|r| Arc::clone(r.value())) else {
+            return;
+        };
 
         // r.connection.push(Arc::from(con_id.to_string()));
         info!("joined room {}", room_id);
@@ -229,7 +226,7 @@ impl<'a> WsMsg<'a> {
             .await
             .map_err(|e| format!("send answer: {e}"))?;
 
-        state.pcs.write().await.insert(con_id, Arc::from(pc));
+        state.pcs.insert(con_id, Arc::from(pc));
         Ok(())
     }
 }
@@ -242,8 +239,8 @@ pub fn routes() -> Router<ServerState> {
 }
 
 async fn create_room(
-    State(state): State<ServerState>,
-    ValidateJson(r): ValidateJson<CreateRoomReq>,
+    State(_state): State<ServerState>,
+    ValidateJson(_r): ValidateJson<CreateRoomReq>,
 ) -> Result<(StatusCode, FastJson<CreateRoomRes>), ApiError> {
     {
         // let id = RoomId::from_str(r.name.into()).unwrap();
@@ -288,7 +285,7 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
         tokio::select! {
             incoming = stream.next() => {
                 match incoming {
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                     Some(Ok(Message::Text(msg))) => {
                         match sonic_rs::from_slice::<WsMsg<'_>>(msg.as_bytes()) {
                             Ok(WsMsg::Join { room }) => {
@@ -301,7 +298,7 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
                             }
                             Ok(WsMsg::Candidate { candidate, line_index, mid, username_fragment }) => {
                                 info!("received candidate: {}", candidate);
-                                let pc = state.pcs.read().await.get(&con_id).cloned();
+                                let pc = state.pcs.get(&con_id).map(|p| Arc::clone(p.value()));
                                 match pc {
                                     Some(pc) => {
                                         if let Err(e) = pc
@@ -343,7 +340,7 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
     }
 
     state.connections.remove(&con_id);
-    state.pcs.write().await.remove(&con_id);
+    state.pcs.remove(&con_id);
 
     info!("ws disconnected");
 }

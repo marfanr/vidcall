@@ -11,8 +11,8 @@ use serde::de::DeserializeOwned;
 use tracing::error;
 use validator::{Validate, ValidationErrors};
 
-pub mod v1;
 pub mod server;
+pub mod v1;
 
 // Error response
 #[derive(Debug)]
@@ -91,7 +91,7 @@ impl<T: sonic_rs::Serialize> IntoResponse for FastJson<T> {
     }
 }
 
-pub fn unavailable(e: impl Display) -> ApiError {
+pub fn unavailable(_e: impl Display) -> ApiError {
     ApiError::Rejection(
         StatusCode::SERVICE_UNAVAILABLE,
         "service unavailable".to_string(),

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import VideoCallView from '../views/VideoCallView.vue'
 import HomeView from '@/views/HomeView.vue'
 import SigninView from '@/views/SigninView.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -11,6 +12,7 @@ const router = createRouter({
       component: HomeView,
       meta: {
         title: 'Home',
+        requiresAuth: true,
       },
     },
     {
@@ -26,14 +28,20 @@ const router = createRouter({
       component: VideoCallView,
       meta: {
         title: 'Video Call',
+        requiresAuth: true,
       },
     },
   ],
 })
 
 router.beforeEach((to) => {
-  const titleFromParams = to.params?.pageTitle
+  const auth = useAuthStore()
 
+  if (to.meta.requiresAuth && !auth.authenticated) {
+    return { path: '/signin' }
+  }
+
+  const titleFromParams = to.params?.pageTitle
   const title = titleFromParams
     ? String(titleFromParams)
     : String(to.meta?.title || 'Default Title')

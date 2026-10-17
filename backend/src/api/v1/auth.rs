@@ -1,25 +1,18 @@
-use std::{
-    borrow::Cow,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::borrow::Cow;
 
 use argon2::{PasswordHash, PasswordVerifier};
-use axum::{
-    Router,
-    body::Bytes,
-    extract::State,
-    http::StatusCode,
-    routing::{get, options, post},
-};
+use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
 use axum_extra::extract::{CookieJar, cookie::Cookie};
-use cookie::time::Duration;
+use chrono::Utc;
+use cookie::time::Duration as CookieDuration;
 use tracing::info;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    api::{ApiError, FastJson, db_error, poll_error, server::ServerState},
-    utils::{AuthClaims, create_jwt, get_argon, verify_jwt},
+    api::{ApiError, FastJson, poll_error, server::ServerState},
+    models::{refresh_tokens as rt, user},
+    utils::{FAMILY_TTL, REFRESH_TTL, RefreshClaims, get_argon, sign_pair, verify_jwt},
 };
 
 #[derive(sonic_rs::Deserialize, Validate)]
@@ -42,6 +35,7 @@ pub fn routes() -> Router<ServerState> {
     Router::new()
         .route("/signin", post(self::signin))
         .route("/refresh", post(self::refresh_token))
+        .route("/logout", post(self::logout))
 }
 
 async fn signin(
@@ -56,96 +50,177 @@ async fn signin(
 
     let db = state.pool.get().await.map_err(poll_error)?;
 
-    let smt = db
-        .prepare_cached("SELECT id, email, password, salt FROM users WHERE email = $1")
-        .await
-        .map_err(db_error)?;
-
     let email: &str = req.email.as_ref();
-    let Some(user) = db.query_opt(&smt, &[&email]).await.map_err(db_error)? else {
+    let Some(found_user) = user::find_by_email(&db, email).await? else {
         return Err(ApiError::Rejection(
             StatusCode::UNAUTHORIZED,
             "The credentials you entered are incorrect".into(),
         ));
     };
 
-    let stored_hash: String = user.get("password");
-    let parsed_hash = PasswordHash::new(&stored_hash).map_err(|e| {
-        tracing::error!("Invalid password hash in database: {e}");
+    let password_bytes = req.password.as_bytes().to_vec();
+    let hash_string = found_user.password;
+    let is_valid = tokio::task::spawn_blocking(move || {
+        let Ok(parsed_hash) = PasswordHash::new(&hash_string) else {
+            return false;
+        };
+        get_argon()
+            .verify_password(&password_bytes, &parsed_hash)
+            .is_ok()
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("spawn_blocking error in password verification: {e}");
         ApiError::Rejection(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal server error".into(),
         )
     })?;
 
-    if get_argon()
-        .verify_password(req.password.as_bytes(), &parsed_hash)
-        .is_err()
-    {
+    if !is_valid {
         return Err(ApiError::Rejection(
             StatusCode::UNAUTHORIZED,
             "The credentials you entered are incorrect".into(),
         ));
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock before epoch")
-        .as_secs();
+    let user_id = found_user.id;
+    let jti = Uuid::now_v7();
+    let family_id = Uuid::now_v7();
 
-    let userid: Uuid = user.get("id");
+    let sign = sign_pair(user_id, "api", jti, family_id).expect("failed to sign");
 
-    let refresh_jws = create_jwt::<AuthClaims>(&AuthClaims {
-        iat: now,
-        sub: req.email.to_string(),
-        exp: now + (30 * 24 * 60 * 60),
-        id: userid.to_string(),
-        ..Default::default()
-    })
-    .expect("failed create jwt");
+    let now = Utc::now();
+    let family_expires_at = now + FAMILY_TTL;
+    let expires_at = (now + REFRESH_TTL).min(family_expires_at);
 
-    let token_jws = create_jwt::<AuthClaims>(&AuthClaims {
-        iat: now,
-        sub: req.email.to_string(),
-        exp: now + (7 * 24 * 60 * 60),
-        id: userid.to_string(),
-        ..Default::default()
-    })
-    .expect("failed create jwt");
+    rt::publish(db, user_id, jti, family_id, expires_at, family_expires_at).await?;
 
-    let refresh_token = format!(
-        "{}.{}.{}",
-        refresh_jws.protected, refresh_jws.payload, refresh_jws.signature
-    );
-    let token = format!(
-        "{}.{}.{}",
-        token_jws.protected, token_jws.payload, token_jws.signature
-    );
-
-    let cookie = Cookie::build(("refresh_token", refresh_token))
+    let cookie = Cookie::build(("refresh_token", sign.refresh_token))
         .http_only(true)
         .secure(true)
-        .path("/")
-        .max_age(Duration::days(7))
+        .same_site(cookie::SameSite::None)
+        .path("/v1/auth/refresh")
+        .max_age(CookieDuration::days(7))
         .build();
 
     Ok((
         StatusCode::OK,
         jar.add(cookie),
-        FastJson(SignInResponse { token: token }),
+        FastJson(SignInResponse {
+            token: sign.access_token,
+        }),
     ))
 }
 
-async fn refresh_token(State(state): State<ServerState>, jar: CookieJar) {
-    if let Some(refresh) = jar.get("refresh_token") {
-        info!("refresh token {}", refresh);
-        match verify_jwt::<AuthClaims>(refresh.value()) {
-            Ok(claims) => {
-                info!("claims {:#?}", claims);
+async fn refresh_token(
+    State(state): State<ServerState>,
+    jar: CookieJar,
+) -> Result<(StatusCode, CookieJar, FastJson<SignInResponse>), ApiError> {
+    let Some(refresh) = jar.get("refresh_token") else {
+        return Err(ApiError::NotFound);
+    };
+
+    let claims = verify_jwt::<RefreshClaims>(refresh.value()).map_err(|e| {
+        info!("invalid jwt: {}", e);
+        ApiError::NotFound
+    })?;
+
+    let db = state.pool.get().await.map_err(poll_error)?;
+
+    let jti: Uuid = claims
+        .jti
+        .parse()
+        .map_err(|_| ApiError::Rejection(StatusCode::BAD_REQUEST, "invalid jti".into()))?;
+    let family_id: Uuid = claims
+        .family_id
+        .parse()
+        .map_err(|_| ApiError::Rejection(StatusCode::BAD_REQUEST, "invalid family_id".into()))?;
+    let user_id: Uuid = claims
+        .sub
+        .parse()
+        .map_err(|_| ApiError::Rejection(StatusCode::BAD_REQUEST, "invalid user_id".into()))?;
+
+    let now = Utc::now();
+
+    let token = match rt::find_and_mark_used(&db, jti, now).await? {
+        Ok(token) => token,
+        Err(rt::UsedOrNotFound) => {
+            let reused = rt::check_reuse_and_revoke_family(&db, jti, family_id).await?;
+            if reused {
+                return Err(ApiError::NotFound);
             }
-            Err(e) => {
-                info!("invalid jwt: {}", e);
-            }
+            return Err(ApiError::NotFound);
         }
     };
+
+    let new_jti = Uuid::now_v7();
+    let new_expires_at = (now + REFRESH_TTL).min(token.family_expires_at);
+
+    let sign = sign_pair(user_id, "api", new_jti, family_id).map_err(|e| {
+        tracing::error!("failed to sign new token pair: {}", e);
+        ApiError::Rejection(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal server error".into(),
+        )
+    })?;
+
+    rt::publish(
+        db,
+        user_id,
+        new_jti,
+        family_id,
+        new_expires_at,
+        token.family_expires_at,
+    )
+    .await?;
+
+    let cookie = Cookie::build(("refresh_token", sign.refresh_token))
+        .http_only(true)
+        .secure(true)
+        .same_site(cookie::SameSite::None)
+        .path("/v1/auth/refresh")
+        .max_age(CookieDuration::days(7))
+        .build();
+
+    Ok((
+        StatusCode::OK,
+        jar.add(cookie),
+        FastJson(SignInResponse {
+            token: sign.access_token,
+        }),
+    ))
+}
+
+async fn logout(
+    State(state): State<ServerState>,
+    jar: CookieJar,
+) -> Result<(StatusCode, CookieJar), ApiError> {
+    let Some(refresh) = jar.get("refresh_token") else {
+        return Err(ApiError::NotFound);
+    };
+
+    let claims = verify_jwt::<RefreshClaims>(refresh.value()).map_err(|e| {
+        info!("invalid jwt: {}", e);
+        ApiError::NotFound
+    })?;
+
+    let family_id: Uuid = claims
+        .family_id
+        .parse()
+        .map_err(|_| ApiError::Rejection(StatusCode::BAD_REQUEST, "invalid family_id".into()))?;
+
+    let db = state.pool.get().await.map_err(poll_error)?;
+
+    rt::revoke_family(&db, family_id).await?;
+
+    let cookie = Cookie::build(("refresh_token", ""))
+        .http_only(true)
+        .secure(true)
+        .same_site(cookie::SameSite::None)
+        .path("/v1/auth/refresh")
+        .max_age(CookieDuration::seconds(0))
+        .build();
+
+    Ok((StatusCode::OK, jar.add(cookie)))
 }

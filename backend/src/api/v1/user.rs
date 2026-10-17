@@ -1,14 +1,12 @@
 use std::borrow::Cow;
 
-use crate::{
-    api::{ApiError, FastJson, db_error, poll_error, server::ServerState},
-    utils::get_argon,
-};
-use argon2::{PasswordHasher, password_hash::phc::SaltString};
 use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
-use tokio_postgres::error::SqlState;
-use tracing::trace;
 use validator::Validate;
+
+use crate::{
+    api::{ApiError, FastJson, poll_error, server::ServerState},
+    models::user,
+};
 
 #[derive(sonic_rs::Deserialize, Validate)]
 struct UserRequest<'a> {
@@ -34,7 +32,7 @@ pub fn routes() -> Router<ServerState> {
 }
 
 async fn create_new_user(
-    State(_state): State<ServerState>,
+    State(state): State<ServerState>,
     b: Bytes,
 ) -> Result<(StatusCode, FastJson<UserResponse>), ApiError> {
     let req: UserRequest = sonic_rs::from_slice(&b)
@@ -42,50 +40,8 @@ async fn create_new_user(
 
     req.validate().map_err(ApiError::Validation)?;
 
-    // todo: move this
-    let argon2 = get_argon();
-
-    let db = _state.pool.get().await.map_err(poll_error)?;
-    let id = uuid::Uuid::now_v7();
-
-    let salt = SaltString::generate();
-
-    let pw = argon2
-        .hash_password_with_salt(req.password.as_bytes(), &salt.to_salt())
-        .unwrap()
-        .to_string();
-
-    let stmt = db
-        .prepare_cached(
-            "INSERT INTO users (id, username, email, password, salt) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .await
-        .map_err(db_error)?;
-
-    let res = db
-        .execute(
-            &stmt,
-            &[&id, &req.username, &req.email, &pw, &salt.to_string()],
-        )
-        .await
-        .map_err(|e| {
-            let Some(db) = e.as_db_error() else {
-                return db_error(e);
-            };
-
-            if *db.code() == SqlState::UNIQUE_VIOLATION {
-                return match db.constraint() {
-                    Some("users_username_key") => {
-                        ApiError::Rejection(StatusCode::CONFLICT, "users already exists".into())
-                    }
-                    _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into()),
-                };
-            }
-
-            db_error(e)
-        })?;
-
-    trace!("create_new_users: affected {} rows", res);
+    let db = state.pool.get().await.map_err(poll_error)?;
+    let id = user::create(&db, &req.username, &req.email, &req.password).await?;
 
     Ok((
         StatusCode::OK,
