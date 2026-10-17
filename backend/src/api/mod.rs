@@ -11,10 +11,8 @@ use serde::de::DeserializeOwned;
 use tracing::error;
 use validator::{Validate, ValidationErrors};
 
-pub mod auth;
-pub mod room;
+pub mod v1;
 pub mod server;
-pub mod user;
 
 // Error response
 #[derive(Debug)]

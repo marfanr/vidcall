@@ -15,8 +15,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{Level, info};
 
 use crate::{
-    api::{auth, room, user},
-    models::room::{Room, RoomId},
+    api::v1, models::room::{Room, RoomId},
 };
 
 #[derive(Default)]
@@ -25,9 +24,9 @@ struct ApiV1 {}
 impl ApiV1 {
     fn routes() -> Router<ServerState> {
         Router::new()
-            .nest("/room", room::V1::routes())
-            .nest("/user", user::V1::routes())
-            .nest("/auth", auth::V1::routes())
+            .nest("/room", v1::room::routes())
+            .nest("/user", v1::user::routes())
+            .nest("/auth", v1::auth::routes())
     }
 }
 
