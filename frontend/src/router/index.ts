@@ -2,7 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import VideoCallView from '../views/VideoCallView.vue'
 import HomeView from '@/views/HomeView.vue'
 import SigninView from '@/views/SigninView.vue'
-import { useAuthStore } from '@/stores/auth'
+import { api } from '@/lib/axios.ts'
+// import { useAuthStore } from '@/stores/auth'
+// import { api } from '@/lib/axios.ts'
+// import { info } from 'console'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -35,11 +38,16 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  const auth = useAuthStore()
+  // const auth = useAuthStore()
 
-  if (to.meta.requiresAuth && !auth.authenticated) {
-    return { path: '/signin' }
-  }
+  // if (to.meta.requiresAuth && !auth.authenticated) {
+  //   return { path: '/signin' }
+  // }
+
+  // const cookies = useCookies(['locale']).getAll()
+  // console.log(cookies)
+
+  api.post('/auth/refresh').then((r) => console.log(r))
 
   const titleFromParams = to.params?.pageTitle
   const title = titleFromParams

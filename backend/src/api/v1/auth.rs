@@ -30,7 +30,6 @@ struct SignInResponse {
     token: String,
 }
 
-#[tracing::instrument()]
 pub fn routes() -> Router<ServerState> {
     Router::new()
         .route("/signin", post(self::signin))
@@ -38,6 +37,7 @@ pub fn routes() -> Router<ServerState> {
         .route("/logout", post(self::logout))
 }
 
+#[tracing::instrument(skip_all)]
 async fn signin(
     State(state): State<ServerState>,
     jar: CookieJar,
@@ -113,12 +113,13 @@ async fn signin(
     ))
 }
 
+#[tracing::instrument(skip_all)]
 async fn refresh_token(
     State(state): State<ServerState>,
     jar: CookieJar,
 ) -> Result<(StatusCode, CookieJar, FastJson<SignInResponse>), ApiError> {
     let Some(refresh) = jar.get("refresh_token") else {
-        return Err(ApiError::NotFound);
+        return Err(ApiError::Rejection(StatusCode::OK, "no refresh_token found".to_string()));
     };
 
     let claims = verify_jwt::<RefreshClaims>(refresh.value()).map_err(|e| {

@@ -200,7 +200,10 @@ mod tests {
         assert!(token.revoked_at.is_none(), "Token should not be revoked");
         assert!(token.used_at.is_none(), "Token should not be used");
         assert!(token.expires_at > now, "Token should not be expired");
-        assert!(token.family_expires_at > now, "Family should not be expired");
+        assert!(
+            token.family_expires_at > now,
+            "Family should not be expired"
+        );
     }
 
     #[test]
@@ -397,7 +400,10 @@ mod tests {
             family_expires_at: now + chrono::Duration::days(7),
         };
 
-        assert_eq!(token1.family_id, token2.family_id, "Tokens in same family should have same family_id");
+        assert_eq!(
+            token1.family_id, token2.family_id,
+            "Tokens in same family should have same family_id"
+        );
         assert_ne!(token1.jti, token2.jti, "Tokens should have different jti");
     }
 }
@@ -445,10 +451,7 @@ pub async fn check_reuse_and_revoke_family(
         .await
         .map_err(db_error)?;
 
-    let row = db
-        .query_opt(&check_stmt, &[&jti])
-        .await
-        .map_err(db_error)?;
+    let row = db.query_opt(&check_stmt, &[&jti]).await.map_err(db_error)?;
 
     match row {
         Some(r) => {

@@ -24,7 +24,7 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await api.post('/auth/refresh_token', {
         refreshToken: refreshToken.value,
       })
-      const newAccessToken = res.data?.accessToken
+      const newAccessToken = res.data?.token
       if (newAccessToken) {
         accessToken.value = newAccessToken
         return true

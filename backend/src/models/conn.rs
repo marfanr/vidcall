@@ -35,7 +35,7 @@ pub fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>> {
     cfg.connect_timeout = Some(Duration::from_secs(5));
     cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
     cfg.manager = Some(ManagerConfig {
-        recycling_method: deadpool_postgres::RecyclingMethod::Fast,
+        recycling_method: deadpool_postgres::RecyclingMethod::Verified,
     });
 
     let mut root_store = RootCertStore::empty();

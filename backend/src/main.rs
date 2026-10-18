@@ -5,10 +5,9 @@ use std::{
 };
 
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::server::{ServerState, run_server},
+    api::server::{ServerState, init_metrics, run_server},
     models::{
         conn,
         room::{Room, RoomId},
@@ -16,9 +15,17 @@ use crate::{
     utils::init_keys,
 };
 
+fn init_rustls() {
+    let provider = rustls::crypto::ring::default_provider();
+    let _ = provider.install_default();
+}
+
 pub mod api;
+pub mod db;
+pub mod logger;
 pub mod models;
 pub mod sfu;
+pub mod telemetry;
 pub mod utils;
 
 #[derive(Default)]
@@ -39,11 +46,14 @@ fn handle_args() -> ArgsParsed {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    init_rustls();
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_env("LOG").unwrap_or_else(|_| EnvFilter::new("info")))
-        .init();
+    if let Err(e) = telemetry::init_telemetry() {
+        eprintln!("Failed to initialize telemetry: {}", e);
+    }
+
+    logger::init_logger();
 
     init_keys();
     let pool = conn::init_db()?;
@@ -67,7 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
+    init_metrics();
     run_server(state, 8080).await?;
+
+    telemetry::shutdown_telemetry();
     Ok(())
 }
 

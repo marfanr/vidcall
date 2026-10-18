@@ -5,7 +5,7 @@ import { api } from "@/lib/axios";
 import { useForm, useField } from "vee-validate";
 import { toTypedSchema } from "@vee-validate/zod";
 import * as z from "zod";
-import { useAuthStore } from "@/stores/auth";
+// import { useAuthStore } from "@/stores/auth";
 
 const showPassword = ref(false);
 const loading = ref(false);
@@ -34,13 +34,14 @@ const onSubmit = handleSubmit(async (values) => {
       },
     )
 
-    const auth = useAuthStore()
-    const { accessToken, refreshToken } = res.data ?? {}
-    if (accessToken && refreshToken) {
-      auth.setTokens(accessToken, refreshToken)
-    } else if (accessToken) {
-      auth.setAccessToken(accessToken)
-    }
+    console.log(res)
+    // const auth = useAuthStore()
+    // const { accessToken, refreshToken } = res.data ?? {}
+    // if (accessToken && refreshToken) {
+    //   auth.setTokens(accessToken, refreshToken)
+    // } else if (accessToken) {
+    //   auth.setAccessToken(accessToken)
+    // }
   }
   catch (err) {
     const axiosErr = err as { response?: { data?: { error?: string }; status?: number } };
