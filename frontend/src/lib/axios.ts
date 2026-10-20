@@ -38,8 +38,12 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
     const auth = useAuthStore()
+    // never trigger the refresh-retry flow from auth endpoints themselves
+    // (refresh is cookie-based; a 401 from signin just means bad credentials)
+    const url: string = originalRequest?.url ?? ''
+    const isAuthCall = url.includes('/auth/refresh') || url.includes('/auth/signin')
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (error.response?.status === 401 && !originalRequest._retry && !isAuthCall) {
       if (isRefreshing) {
         return new Promise((resolve) => {
           subscribeTokenRefresh((token: string) => {
@@ -69,5 +73,5 @@ api.interceptors.response.use(
     }
 
     return Promise.reject(error)
-  }
+  },
 )

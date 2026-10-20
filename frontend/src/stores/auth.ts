@@ -19,14 +19,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function refreshAccessToken(): Promise<boolean> {
-    if (!refreshToken.value) return false
     try {
-      const res = await api.post('/auth/refresh_token', {
-        refreshToken: refreshToken.value,
-      })
+      // refresh token lives in an httpOnly cookie (path=/v1/auth/refresh)
+      const res = await api.post('/auth/refresh')
       const newAccessToken = res.data?.token
       if (newAccessToken) {
         accessToken.value = newAccessToken
+        authenticated.value = true
         return true
       }
       return false

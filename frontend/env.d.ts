@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare module "vue3-emoji-picker/css";
+
 declare module "@braid/vue-formulate" {
   import { DefineComponent } from "vue";
 
