@@ -77,7 +77,7 @@ async fn loki_worker(mut rx: mpsc::Receiver<LogEntry>) {
             streams.entry(key).or_default().push(entry);
         }
 
-        let loki_streams: Vec<LokiStream> = streams.into_iter().map(|(_, entries)| {
+        let loki_streams: Vec<LokiStream> = streams.into_values().map(|(entries)| {
             let level = entries.first().map(|e| e.level.clone()).unwrap_or_default();
             let user_id = entries.first().and_then(|e| e.user_id.clone());
 

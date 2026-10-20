@@ -1,8 +1,12 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Object;
+use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::api::{ApiError, db_error};
+use crate::{
+    api::{ApiError, db_error},
+    models::constant::{CHECK_REUSE_AND_REVOKE_FAM_SQL, FIND_AND_MARK_SQL},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefreshToken {
@@ -13,6 +17,121 @@ pub struct RefreshToken {
     pub revoked_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
     pub family_expires_at: DateTime<Utc>,
+}
+#[tracing::instrument(skip(db))]
+pub async fn find_and_mark_used(
+    db: &Object,
+    jti: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Result<RefreshToken, UsedOrNotFound>, ApiError> {
+    let stmt = db
+        .prepare_cached(FIND_AND_MARK_SQL)
+        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+
+    let row = db
+        .query_opt(&stmt, &[&now, &jti, &now])
+        .instrument(tracing::info_span!("db.query", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+
+    match row {
+        Some(r) => Ok(Ok(RefreshToken {
+            jti,
+            user_id: r.get("user_id"),
+            family_id: r.get("family_id"),
+            used_at: Some(now),
+            revoked_at: None,
+            expires_at: r.get("expires_at"),
+            family_expires_at: r.get("family_expires_at"),
+        })),
+        None => Ok(Err(UsedOrNotFound)),
+    }
+}
+
+pub struct UsedOrNotFound;
+
+#[tracing::instrument(skip(db))]
+pub async fn check_reuse_and_revoke_family(
+    db: &Object,
+    jti: Uuid,
+    family_id: Uuid,
+) -> Result<bool, ApiError> {
+    let check_stmt = db
+        .prepare_cached(CHECK_REUSE_AND_REVOKE_FAM_SQL)
+        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+
+    let row = db
+        .query_opt(&check_stmt, &[&jti])
+        .instrument(tracing::info_span!("db.query", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+
+    match row {
+        Some(r) => {
+            let used_at: Option<DateTime<Utc>> = r.get("used_at");
+            let revoked_at: Option<DateTime<Utc>> = r.get("revoked_at");
+            if used_at.is_some() || revoked_at.is_some() {
+                revoke_family(db, family_id).await?;
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        None => Ok(false),
+    }
+}
+
+#[tracing::instrument(skip(db))]
+pub async fn revoke(db: &Object, jti: Uuid) -> Result<(), ApiError> {
+    let stmt = db
+        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE jti = $2")
+        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+    db.execute(&stmt, &[&Utc::now(), &jti])
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+pub async fn revoke_family(db: &Object, family_id: Uuid) -> Result<(), ApiError> {
+    let stmt = db
+        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE family_id = $2")
+        .await
+        .map_err(db_error)?;
+    db.execute(&stmt, &[&Utc::now(), &family_id])
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+#[tracing::instrument(skip(db))]
+pub async fn publish(
+    db: Object,
+    user_id: Uuid,
+    jti: Uuid,
+    family_id: Uuid,
+    expires_at: DateTime<Utc>,
+    family_expires_at: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    let stmt = db
+        .prepare_cached(
+            "INSERT INTO refresh_tokens (user_id, jti, family_id, expires_at, family_expires_at) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
+        .await
+        .map_err(db_error)?;
+
+    db.execute(
+        &stmt,
+        &[&user_id, &jti, &family_id, &expires_at, &family_expires_at],
+    )
+    .await
+    .map_err(db_error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -406,109 +525,4 @@ mod tests {
         );
         assert_ne!(token1.jti, token2.jti, "Tokens should have different jti");
     }
-}
-
-pub async fn find_and_mark_used(
-    db: &Object,
-    jti: Uuid,
-    now: DateTime<Utc>,
-) -> Result<Result<RefreshToken, UsedOrNotFound>, ApiError> {
-    let stmt = db
-        .prepare_cached(
-            "UPDATE refresh_tokens SET used_at = $1 WHERE jti = $2 AND revoked_at IS NULL AND used_at IS NULL AND expires_at > $3 AND family_expires_at > $3 RETURNING user_id, family_id, expires_at, family_expires_at",
-        )
-        .await
-        .map_err(db_error)?;
-
-    let row = db
-        .query_opt(&stmt, &[&now, &jti, &now])
-        .await
-        .map_err(db_error)?;
-
-    match row {
-        Some(r) => Ok(Ok(RefreshToken {
-            jti,
-            user_id: r.get("user_id"),
-            family_id: r.get("family_id"),
-            used_at: Some(now),
-            revoked_at: None,
-            expires_at: r.get("expires_at"),
-            family_expires_at: r.get("family_expires_at"),
-        })),
-        None => Ok(Err(UsedOrNotFound)),
-    }
-}
-
-pub struct UsedOrNotFound;
-
-pub async fn check_reuse_and_revoke_family(
-    db: &Object,
-    jti: Uuid,
-    family_id: Uuid,
-) -> Result<bool, ApiError> {
-    let check_stmt = db
-        .prepare_cached("SELECT used_at, revoked_at FROM refresh_tokens WHERE jti = $1")
-        .await
-        .map_err(db_error)?;
-
-    let row = db.query_opt(&check_stmt, &[&jti]).await.map_err(db_error)?;
-
-    match row {
-        Some(r) => {
-            let used_at: Option<DateTime<Utc>> = r.get("used_at");
-            let revoked_at: Option<DateTime<Utc>> = r.get("revoked_at");
-            if used_at.is_some() || revoked_at.is_some() {
-                revoke_family(db, family_id).await?;
-                return Ok(true);
-            }
-            Ok(false)
-        }
-        None => Ok(false),
-    }
-}
-
-pub async fn revoke(db: &Object, jti: Uuid) -> Result<(), ApiError> {
-    let stmt = db
-        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE jti = $2")
-        .await
-        .map_err(db_error)?;
-    db.execute(&stmt, &[&Utc::now(), &jti])
-        .await
-        .map_err(db_error)?;
-    Ok(())
-}
-
-pub async fn revoke_family(db: &Object, family_id: Uuid) -> Result<(), ApiError> {
-    let stmt = db
-        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE family_id = $2")
-        .await
-        .map_err(db_error)?;
-    db.execute(&stmt, &[&Utc::now(), &family_id])
-        .await
-        .map_err(db_error)?;
-    Ok(())
-}
-
-pub async fn publish(
-    db: Object,
-    user_id: Uuid,
-    jti: Uuid,
-    family_id: Uuid,
-    expires_at: DateTime<Utc>,
-    family_expires_at: DateTime<Utc>,
-) -> Result<(), ApiError> {
-    let stmt = db
-        .prepare_cached(
-            "INSERT INTO refresh_tokens (user_id, jti, family_id, expires_at, family_expires_at) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .await
-        .map_err(db_error)?;
-
-    db.execute(
-        &stmt,
-        &[&user_id, &jti, &family_id, &expires_at, &family_expires_at],
-    )
-    .await
-    .map_err(db_error)?;
-    Ok(())
 }

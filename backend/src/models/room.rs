@@ -1,124 +1,101 @@
-// will be moved to sfu
-use std::{
-    fmt,
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
-
-use arc_swap::ArcSwap;
-use axum::extract::ws::Message;
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use crate::api::{ApiError, db_error};
+use crate::models::StandardModel;
+use async_trait::async_trait;
+use deadpool_postgres::{GenericClient, Object};
+use futures_util::TryFutureExt;
+use http::StatusCode;
+use sonic_rs::{Deserialize, JsonValueTrait, Serialize, Value};
+use tokio_postgres::error::SqlState;
+use tokio_postgres::types::Json;
+use tracing::Instrument;
 use uuid::Uuid;
-use webrtc::peer_connection::PeerConnection;
+use crate::models::constant::CREATE_ROOM_SQL;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidRoomId;
-
-impl fmt::Display for InvalidRoomId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid room id")
-    }
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RoomOption {
+    pub max_participants: Option<u32>,
 }
 
-impl std::error::Error for InvalidRoomId {}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct RoomId(Arc<str>);
-
-impl RoomId {
-    pub const LEN: usize = 12;
-
-    pub fn generate() -> Self {
-        Self(nanoid::nanoid!(Self::LEN).into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl FromStr for RoomId {
-    type Err = InvalidRoomId;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let valid = s.len() == Self::LEN
-            && s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        if valid {
-            Ok(Self(s.into()))
-        } else {
-            Err(InvalidRoomId)
-        }
-    }
-}
-
-impl TryFrom<String> for RoomId {
-    type Error = InvalidRoomId;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
-    }
-}
-
-impl From<RoomId> for String {
-    fn from(id: RoomId) -> Self {
-        id.0.to_string()
-    }
-}
-
-impl fmt::Display for RoomId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::borrow::Borrow<str> for RoomId {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-pub struct Peer {
-    pub id: Uuid,
-    pub ws_tx: mpsc::Sender<Message>,
-    pub pc: Box<dyn PeerConnection>,
-}
-
+// TODO: jadikan standar model seperti ini
+#[derive(Debug)]
 pub struct Room {
-    pub id: RoomId,
-    pub name: RwLock<Arc<str>>,
-    pub peers: ArcSwap<Vec<Peer>>,
+    pub alias: String,
+    pub owner_id: Uuid,
+    pub passcode: String,
+    pub title: Option<String>,
+    pub option: Option<Value>,
 }
 
 impl Room {
-    pub fn new(id: RoomId, name: RwLock<Arc<str>>) -> Self {
+    pub fn new(alias: &'_ str, owner_id: Uuid, passcode: &'_ str) -> Self {
         Self {
-            id,
-            name,
-            peers: ArcSwap::from_pointee(Vec::new()),
+            alias: alias.to_owned(),
+            owner_id,
+            passcode: passcode.to_owned(),
+            title: None,
+            option: None,
         }
     }
+}
 
-    pub fn add_peer(&self, _peer: Arc<Peer>) {
-        // self.peers.insert(peer.id, peer);
+/// Standard Model
+/// standard method used for every db model
+#[async_trait]
+impl StandardModel for Room {
+    type Id = Uuid;
+    #[tracing::instrument(skip_all)]
+    async fn create(&self, db: Object) -> Result<Self::Id, ApiError> {
+        let stmt = db
+            .prepare_cached(
+                CREATE_ROOM_SQL,
+            )
+            .instrument(tracing::info_span!(
+                "db.stmt",
+                db.system = "postgresql",
+                db.operation = "insert"
+            ))
+            .map_err(db_error)
+            .await?;
+
+        let option = self
+            .option
+            .as_ref()
+            .map(|v| sonic_rs::to_value(v).map(tokio_postgres::types::Json))
+            .transpose()
+            .map_err(|err| {
+                ApiError::Rejection(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            })?;
+
+        let row = db
+            .query_one(
+                &stmt,
+                &[
+                    &self.owner_id,
+                    &self.alias,
+                    &self.passcode,
+                    &self.title,
+                    &option,
+                ],
+            )
+            .instrument(tracing::info_span!("db.query", db.system = "postgresql"))
+            .await
+            .map_err(|e| {
+                if let Some(dbe) = e.as_db_error() {
+                    if dbe.code() == &SqlState::UNIQUE_VIOLATION {
+                        return ApiError::Rejection(StatusCode::CONFLICT, "already exists".into());
+                    }
+
+                    if dbe.code() == &SqlState::FOREIGN_KEY_VIOLATION {
+                        return ApiError::Rejection(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "user id does not exist".into(),
+                        );
+                    }
+                }
+
+                db_error(e)
+            })?;
+
+        Ok(row.get("id"))
     }
-
-    // /// Hapus peer dan tutup PeerConnection-nya. Satu tempat untuk cleanup.
-    // pub async fn remove_peer(&self, peer_id: &Uuid) {
-    //     // `remove` melepas guard sebelum .await
-    //     if let Some((_, peer)) = self.peers.remove(peer_id) {
-    //         if let Err(e) = peer.pc.close().await {
-    //             warn!(%peer_id, error = %e, "failed to close peer connection");
-    //         }
-    //     }
-    // }
-
-    // pub async fn close(&self) {
-    //     let ids: Vec<Uuid> = self.peers.iter().map(|p| *p.key()).collect();
-    //     for id in ids {
-    //         self.remove_peer(&id).await;
-    //     }
-    // }
 }

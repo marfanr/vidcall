@@ -12,7 +12,8 @@ use tracing::error;
 use validator::{Validate, ValidationErrors};
 
 pub mod server;
-pub mod v1;
+mod v1;
+pub mod metrics;
 
 // Error response
 #[derive(Debug)]
@@ -117,7 +118,6 @@ pub fn db_error(e: tokio_postgres::Error) -> ApiError {
             constraint = ?db.constraint(),
             "db error"
         ),
-        // bukan error dari server (koneksi putus, serialisasi parameter, dll.)
         None => error!(error = ?e, source = ?std::error::Error::source(&e), "db error"),
     }
 

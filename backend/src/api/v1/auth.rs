@@ -5,6 +5,7 @@ use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post}
 use axum_extra::extract::{CookieJar, cookie::Cookie};
 use chrono::Utc;
 use cookie::time::Duration as CookieDuration;
+use tracing::Instrument;
 use tracing::info;
 use uuid::Uuid;
 use validator::Validate;
@@ -37,7 +38,7 @@ pub fn routes() -> Router<ServerState> {
         .route("/logout", post(self::logout))
 }
 
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip(state))]
 async fn signin(
     State(state): State<ServerState>,
     jar: CookieJar,
@@ -48,7 +49,12 @@ async fn signin(
 
     req.validate().map_err(ApiError::Validation)?;
 
-    let db = state.pool.get().await.map_err(poll_error)?;
+    let db = state
+        .pool
+        .get()
+        .instrument(tracing::info_span!("db.pool_get"))
+        .await
+        .map_err(poll_error)?;
 
     let email: &str = req.email.as_ref();
     let Some(found_user) = user::find_by_email(&db, email).await? else {
@@ -60,7 +66,10 @@ async fn signin(
 
     let password_bytes = req.password.as_bytes().to_vec();
     let hash_string = found_user.password;
+
+    let span = tracing::info_span!("argon.verify");
     let is_valid = tokio::task::spawn_blocking(move || {
+        let _a = span.entered();
         let Ok(parsed_hash) = PasswordHash::new(&hash_string) else {
             return false;
         };
@@ -113,13 +122,16 @@ async fn signin(
     ))
 }
 
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip(state))]
 async fn refresh_token(
     State(state): State<ServerState>,
     jar: CookieJar,
 ) -> Result<(StatusCode, CookieJar, FastJson<SignInResponse>), ApiError> {
     let Some(refresh) = jar.get("refresh_token") else {
-        return Err(ApiError::Rejection(StatusCode::OK, "no refresh_token found".to_string()));
+        return Err(ApiError::Rejection(
+            StatusCode::OK,
+            "no refresh_token found".to_string(),
+        ));
     };
 
     let claims = verify_jwt::<RefreshClaims>(refresh.value()).map_err(|e| {
@@ -127,7 +139,12 @@ async fn refresh_token(
         ApiError::NotFound
     })?;
 
-    let db = state.pool.get().await.map_err(poll_error)?;
+    let db = state
+        .pool
+        .get()
+        .instrument(tracing::info_span!("db.pool_get"))
+        .await
+        .map_err(poll_error)?;
 
     let jti: Uuid = claims
         .jti

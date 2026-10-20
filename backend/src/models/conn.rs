@@ -1,12 +1,27 @@
 use std::{env, time::Duration};
 
-use deadpool_postgres::{Config, ManagerConfig, Pool, Runtime, SslMode};
+use deadpool_postgres::{
+    ClientWrapper, Config, Hook, HookError, ManagerConfig, Pool, PoolConfig, RecyclingMethod,
+    Runtime, SslMode,
+};
 use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, pem::PemObject},
 };
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use crate::models::constant::*;
+
+pub async fn prewarm(pool: &Pool, n: usize) {
+    let n = n.min(pool.status().max_size);
+    let conns = futures_util::future::join_all((0..n).map(|_| pool.get())).await;
+    tracing::info!(
+        ok = conns.iter().filter(|c| c.is_ok()).count(),
+        "pool prewarmed"
+    );
+}
+
+#[tracing::instrument()]
 pub fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>> {
     let password = env::var("POSTGRES_PASSWORD")?;
     let ca_path = env::var("PG_CA_CERT").unwrap_or_else(|_| "certs/ca.crt".into());
@@ -33,9 +48,11 @@ pub fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>> {
     cfg.ssl_mode = Some(SslMode::Require);
     cfg.dbname = Some(dbname);
     cfg.connect_timeout = Some(Duration::from_secs(5));
-    cfg.pool = Some(deadpool_postgres::PoolConfig::new(pool_size));
+    cfg.keepalives = Some(true);
+    cfg.keepalives_idle = Some(Duration::from_secs(30));
+    cfg.pool = Some(PoolConfig::new(pool_size));
     cfg.manager = Some(ManagerConfig {
-        recycling_method: deadpool_postgres::RecyclingMethod::Verified,
+        recycling_method: RecyclingMethod::Fast,
     });
 
     let mut root_store = RootCertStore::empty();
@@ -49,5 +66,26 @@ pub fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>> {
 
     let tls = MakeRustlsConnect::new(tls_config);
 
-    Ok(cfg.create_pool(Some(Runtime::Tokio1), tls)?)
+    let pool = cfg
+        .builder(tls)?
+        .runtime(Runtime::Tokio1)
+        .post_create(Hook::async_fn(|client, _| {
+            Box::pin(async move {
+                warm_statements(client)
+                    .await
+                    .map_err(|e| HookError::message(e.to_string()))
+            })
+        }))
+        .build()?;
+
+    Ok(pool)
+}
+
+#[tracing::instrument(skip(c))]
+pub async fn warm_statements(c: &ClientWrapper) -> Result<(), tokio_postgres::Error> {
+    c.prepare_cached(FIND_AND_MARK_SQL).await?;
+    c.prepare_cached(CHECK_REUSE_AND_REVOKE_FAM_SQL).await?;
+    c.prepare_cached(FIND_BY_EMAIL_SQL).await?;
+    c.prepare_cached(CREATE_ROOM_SQL).await?;
+    Ok(())
 }

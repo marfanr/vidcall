@@ -6,12 +6,13 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use serde::de::DeserializeOwned;
 use sonic_rs::{Deserialize, Serialize};
 use uuid::Uuid;
+use validator::ValidationError;
 
 // Argon
 pub fn get_argon<'a>() -> Argon2<'a> {
     Argon2::new_with_secret(
-        b"haiya",
-        Algorithm::Argon2id,
+        b"bijisatu",
+        Algorithm::Argon2i,
         Version::V0x13,
         Params::default(),
     )
@@ -107,6 +108,7 @@ pub struct TokenPair {
     pub refresh_token: String,
 }
 
+#[tracing::instrument()]
 pub fn sign_pair(
     user_id: Uuid,
     scope: &str,
@@ -148,6 +150,7 @@ pub fn sign_pair(
     })
 }
 
+#[tracing::instrument()]
 pub fn verify_jwt<T: JwtClaims>(token: &str) -> Result<T, jsonwebtoken::errors::Error> {
     let key = keys();
     let mut val = Validation::new(jsonwebtoken::Algorithm::HS512);
@@ -163,4 +166,11 @@ pub fn verify_jwt<T: JwtClaims>(token: &str) -> Result<T, jsonwebtoken::errors::
     };
 
     decode::<T>(token, dec_key, &val).map(|d| d.claims)
+}
+
+// custom validator
+pub fn validate_uuid(id: &str) -> Result<(), ValidationError> {
+    Uuid::parse_str(id)
+        .map_err(|_| ValidationError::new("invalid uuid"))
+        .map(|_| ())
 }

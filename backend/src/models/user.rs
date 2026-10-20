@@ -2,9 +2,13 @@ use argon2::{PasswordHasher, password_hash::phc::SaltString};
 use axum::http::StatusCode;
 use deadpool_postgres::Object;
 use tokio_postgres::error::SqlState;
+use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::api::{ApiError, db_error};
+use crate::{
+    api::{ApiError, db_error},
+    models::constant::FIND_BY_EMAIL_SQL,
+};
 
 #[derive(Debug)]
 pub struct User {
@@ -15,13 +19,27 @@ pub struct User {
     pub salt: String,
 }
 
+#[tracing::instrument(skip(db))]
 pub async fn find_by_email(db: &Object, email: &str) -> Result<Option<User>, ApiError> {
     let stmt = db
-        .prepare_cached("SELECT id, username, email, password, salt FROM users WHERE email = $1")
+        .prepare_cached(FIND_BY_EMAIL_SQL)
+        .instrument(tracing::info_span!(
+            "db.stmt",
+            db.system = "postgresql",
+            db.operation = "select"
+        ))
         .await
         .map_err(db_error)?;
 
-    let row = db.query_opt(&stmt, &[&email]).await.map_err(db_error)?;
+    let row = db
+        .query_opt(&stmt, &[&email])
+        .instrument(tracing::info_span!(
+            "db.query",
+            db.system = "postgresql",
+            db.sql = FIND_BY_EMAIL_SQL
+        ))
+        .await
+        .map_err(db_error)?;
 
     Ok(row.map(|r| User {
         id: r.get("id"),

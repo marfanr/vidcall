@@ -126,12 +126,14 @@ services:
     image: jaegertracing/all-in-one:1.59
     container_name: jaeger
     restart: unless-stopped
+    command:
+      - "--collector.otlp.enabled=true"
+      - "--collector.otlp.grpc.host-port=0.0.0.0:4317"
+      - "--collector.otlp.http.host-port=0.0.0.0:4318"
     environment:
-      COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: memory
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "14268:14268"  # Jaeger collector HTTP (for receiving from otel-collector)
+      - "16686:16686"   # Jaeger UI
     networks:
       - monitoring
 

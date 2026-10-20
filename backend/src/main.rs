@@ -1,18 +1,11 @@
-use std::{
-    env,
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
-
+use std::
+env;
 use tracing::info;
 
+use crate::api::metrics::init_metrics;
 use crate::{
-    api::server::{ServerState, init_metrics, run_server},
-    models::{
-        conn,
-        room::{Room, RoomId},
-    },
-    utils::init_keys,
+    api::server::{ServerState, run_server}, models::
+    conn::{self, prewarm}, utils::init_keys,
 };
 
 fn init_rustls() {
@@ -57,6 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     init_keys();
     let pool = conn::init_db()?;
+    prewarm(&pool, 4).await; 
+    
     let state = ServerState::new(pool);
 
     let args = handle_args();
@@ -64,17 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // TODO: create migration
         info!("run migrations");
         return Ok(());
-    }
-
-    // ONLY FOR DEBUGGING PURPOSE
-    // will be removed later
-    {
-        let roomid = RoomId::from_str("blWGZU0eG9h0").unwrap();
-        info!("room id : {}", roomid);
-        state.rooms.insert(
-            roomid.clone(),
-            Arc::from(Room::new(roomid, RwLock::new(Arc::from("default")))),
-        );
     }
 
     init_metrics();
