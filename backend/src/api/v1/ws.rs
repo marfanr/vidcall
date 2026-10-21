@@ -1,11 +1,13 @@
 use crate::api::server::ServerState;
 use crate::sfu::peer::PcHandler;
+use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
+use axum::routing::get;
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use http::HeaderMap;
-use http::header::USER_AGENT;
+use http::header::{ORIGIN, USER_AGENT};
+use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -40,7 +42,12 @@ enum WsMsg<'a> {
 }
 
 impl<'a> WsMsg<'a> {
-    async fn handle_join(room_id: &'a str, con_id: Uuid, state: &ServerState) {
+    async fn handle_join(
+        room_id: &'a str,
+        con_id: Uuid,
+        state: &ServerState,
+        self_sink: mpsc::Sender<Message>,
+    ) {
         info!("join room={} from {}", room_id, con_id);
 
         // let Some(_room) = state.rooms.get(room_id).map(|r| Arc::clone(r.value())) else {
@@ -49,6 +56,8 @@ impl<'a> WsMsg<'a> {
 
         // r.connection.push(Arc::from(con_id.to_string()));
         info!("joined room {}", room_id);
+
+        // TODO: send response back
     }
 
     async fn handle_offer(
@@ -120,11 +129,25 @@ impl<'a> WsMsg<'a> {
     }
 }
 
-pub async fn ws(
+pub fn routes() -> Router<ServerState> {
+    Router::new().route("/", get(self::ws))
+}
+
+async fn ws(
+    State(s): State<ServerState>,
     ws: WebSocketUpgrade,
     headers: HeaderMap,
     State(state): State<ServerState>,
-) -> Response {
+) -> Result<Response, StatusCode> {
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .ok_or(StatusCode::FORBIDDEN)?;
+
+    if !s.allowed_origins.iter().any(|o| o == origin) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let user_agent = headers
         .get(USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -132,7 +155,7 @@ pub async fn ws(
         .to_owned();
 
     let con_id = Uuid::now_v7();
-    ws.on_upgrade(move |socket| self::handle_socket(socket, user_agent, state, con_id))
+    Ok(ws.on_upgrade(move |socket| self::handle_socket(socket, user_agent, state, con_id)))
 }
 
 async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerState, con_id: Uuid) {
@@ -148,7 +171,7 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
                     Some(Ok(Message::Text(msg))) => {
                         match sonic_rs::from_slice::<WsMsg<'_>>(msg.as_bytes()) {
                             Ok(WsMsg::Join { room }) => {
-                                WsMsg::handle_join(room, con_id, &state).await;
+                                WsMsg::handle_join(room, con_id, &state, tx.clone()).await;
                             }
                             Ok(WsMsg::Offer { sdp }) => {
                                 if let Err(e) = WsMsg::handle_offer(&sdp, con_id, &state, tx.clone()).await {

@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::extract::Request;
+use axum::middleware::Next;
 use axum::response::Response;
 use http::StatusCode;
 use metrics::{counter, describe_counter, describe_gauge, gauge};
@@ -7,7 +8,6 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use std::net::SocketAddr;
 use std::sync::LazyLock;
 use std::time::Duration;
-use axum::middleware::Next;
 
 static METRICS_BEARER_TOKEN: LazyLock<Option<String>> =
     LazyLock::new(|| std::env::var("PROMETHEUS_TOKEN").ok());
@@ -80,10 +80,30 @@ pub fn init_metrics() {
     });
 }
 
+
+#[cfg(not(target_env = "msvc"))]
+fn jemalloc_stats() -> (usize, usize) {
+    use jemalloc_ctl::{epoch, stats};
+    epoch::advance().unwrap();
+    (
+        stats::allocated::read().unwrap(),
+        stats::resident::read().unwrap(),
+    )
+}
+
+#[cfg(target_env = "msvc")]
+fn jemalloc_stats() -> (usize, usize) {
+    (0, 0)
+}
+
 pub fn update_runtime_metrics() {
     let (threads, memory_bytes) = get_runtime_metrics();
     gauge!("vidcall_runtime_threads").set(threads as f64);
     gauge!("vidcall_runtime_memory_bytes").set(memory_bytes as f64);
+
+    let (allocated, resident) = jemalloc_stats();
+    gauge!("vidcall_jemalloc_allocated_bytes").set(allocated as f64);
+    gauge!("vidcall_jemalloc_resident_bytes").set(resident as f64);
 }
 
 fn get_runtime_metrics() -> (u64, u64) {

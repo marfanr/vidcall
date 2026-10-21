@@ -1,12 +1,14 @@
 use std::borrow::Cow;
 
 use axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post};
+use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
     api::{ApiError, FastJson, poll_error, server::ServerState},
     models::user,
 };
+use crate::models::StandardModel;
 
 #[derive(sonic_rs::Deserialize, Validate)]
 struct UserRequest<'a> {
@@ -24,7 +26,7 @@ struct UserRequest<'a> {
 
 #[derive(sonic_rs::Serialize)]
 struct UserResponse {
-    userid: String,
+    userid: Uuid,
 }
 
 pub fn routes() -> Router<ServerState> {
@@ -41,12 +43,8 @@ async fn create_new_user(
     req.validate().map_err(ApiError::Validation)?;
 
     let db = state.pool.get().await.map_err(poll_error)?;
-    let id = user::create(&db, &req.username, &req.email, &req.password).await?;
+    let user = user::User::new(&req.email, &req.username, &req.password);
+    let id = user.create(&db).await?;
 
-    Ok((
-        StatusCode::OK,
-        FastJson(UserResponse {
-            userid: id.to_string(),
-        }),
-    ))
+    Ok((StatusCode::OK, FastJson(UserResponse { userid: id })))
 }

@@ -52,7 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let pool = conn::init_db()?;
     prewarm(&pool, 4).await; 
     
-    let state = ServerState::new(pool);
+    let state = ServerState::new(pool, vec![
+        "http://localhost:5173".to_string(),
+        "http://127.0.0.1:5173".to_string()
+    ]);
 
     let args = handle_args();
     if args.is_running_migration {
@@ -68,5 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;

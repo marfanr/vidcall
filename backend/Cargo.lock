@@ -292,17 +292,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-auth"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93495037c01c639b198ecb926b58f7f1c0d61ae663edcd61b2dd679f2a0bffe6"
-dependencies = [
- "axum-core 0.5.6",
- "base64 0.22.1",
- "http",
-]
-
-[[package]]
 name = "axum-core"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -353,6 +342,7 @@ dependencies = [
  "cookie",
  "futures-core",
  "futures-util",
+ "headers",
  "http",
  "http-body",
  "http-body-util",
@@ -371,7 +361,6 @@ dependencies = [
  "argon2",
  "async-trait",
  "axum 0.8.9",
- "axum-auth",
  "axum-extra",
  "chrono",
  "cookie",
@@ -379,7 +368,9 @@ dependencies = [
  "deadpool-postgres",
  "dotenvy",
  "futures-util",
+ "headers",
  "http",
+ "jemalloc-ctl",
  "jemallocator",
  "jsonwebtoken",
  "metrics",
@@ -1251,6 +1242,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "headers"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc2700e3fe555c3310aa7286cac6167449f2c87e0eb58769c9208a1c58a1d106"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "headers-core",
+ "http",
+ "httpdate",
+ "mime",
+ "sha1",
+]
+
+[[package]]
+name = "headers-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+dependencies = [
+ "http",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1587,6 +1602,17 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jemalloc-ctl"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cffc705424a344c054e135d12ee591402f4539245e8bbd64e6c9eaa9458b63c"
+dependencies = [
+ "jemalloc-sys",
+ "libc",
+ "paste",
+]
 
 [[package]]
 name = "jemalloc-sys"
@@ -2094,6 +2120,12 @@ dependencies = [
  "getrandom 0.4.3",
  "phc",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pem"
@@ -3957,6 +3989,7 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

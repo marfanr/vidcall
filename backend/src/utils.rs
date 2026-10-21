@@ -34,7 +34,7 @@ pub trait JwtClaims: Serialize + DeserializeOwned {
     const AUDIENCE: &'static str;
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone)]
 pub struct AccessClaims {
     pub sub: String,
     pub exp: u64,

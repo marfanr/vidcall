@@ -38,7 +38,7 @@ pub fn routes() -> Router<ServerState> {
         .route("/logout", post(self::logout))
 }
 
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip_all)]
 async fn signin(
     State(state): State<ServerState>,
     jar: CookieJar,
@@ -57,25 +57,36 @@ async fn signin(
         .map_err(poll_error)?;
 
     let email: &str = req.email.as_ref();
-    let Some(found_user) = user::find_by_email(&db, email).await? else {
-        return Err(ApiError::Rejection(
-            StatusCode::UNAUTHORIZED,
-            "The credentials you entered are incorrect".into(),
-        ));
-    };
+    let found_user = user::User::get_by_email(&db, email).await?;
 
     let password_bytes = req.password.as_bytes().to_vec();
     let hash_string = found_user.password;
 
     let span = tracing::info_span!("argon.verify");
+
+    let permit = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        state.hash_sem.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiError::Rejection(StatusCode::SERVICE_UNAVAILABLE, "busy, try again".into()))?
+    .map_err(|_| {
+        ApiError::Rejection(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal server error".into(),
+        )
+    })?;
+
     let is_valid = tokio::task::spawn_blocking(move || {
-        let _a = span.entered();
-        let Ok(parsed_hash) = PasswordHash::new(&hash_string) else {
-            return false;
-        };
-        get_argon()
-            .verify_password(&password_bytes, &parsed_hash)
-            .is_ok()
+        let _permit = permit;
+        span.in_scope(|| {
+            let Ok(parsed_hash) = PasswordHash::new(&hash_string) else {
+                return false;
+            };
+            get_argon()
+                .verify_password(&password_bytes, &parsed_hash)
+                .is_ok()
+        })
     })
     .await
     .map_err(|e| {
@@ -93,7 +104,8 @@ async fn signin(
         ));
     }
 
-    let user_id = found_user.id;
+    let user_id = found_user.id.expect("user_id should not be None");
+
     let jti = Uuid::now_v7();
     let family_id = Uuid::now_v7();
 

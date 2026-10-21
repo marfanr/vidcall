@@ -85,7 +85,9 @@ pub fn init_db() -> Result<Pool, Box<dyn std::error::Error + Send + Sync>> {
 pub async fn warm_statements(c: &ClientWrapper) -> Result<(), tokio_postgres::Error> {
     c.prepare_cached(FIND_AND_MARK_SQL).await?;
     c.prepare_cached(CHECK_REUSE_AND_REVOKE_FAM_SQL).await?;
-    c.prepare_cached(FIND_BY_EMAIL_SQL).await?;
+    c.prepare_cached(GET_USER_BY_EMAIL_SQL).await?;
     c.prepare_cached(CREATE_ROOM_SQL).await?;
+    c.prepare_cached(GET_ROOM_BY_ALIAS_SQL).await?;
+    c.prepare_cached(GET_USER_BY_ID_SQL).await?;
     Ok(())
 }

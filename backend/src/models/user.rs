@@ -1,110 +1,155 @@
 use argon2::{PasswordHasher, password_hash::phc::SaltString};
+use async_trait::async_trait;
 use axum::http::StatusCode;
 use deadpool_postgres::Object;
+use std::sync::Arc;
+use tokio_postgres::Row;
 use tokio_postgres::error::SqlState;
-use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::{
-    api::{ApiError, db_error},
-    models::constant::FIND_BY_EMAIL_SQL,
-};
+use crate::api::{ApiError, db_error};
+use crate::models::constant::{CREATE_USER_SQL, GET_USER_BY_EMAIL_SQL, GET_USER_BY_ID_SQL};
+use crate::models::{FromRow, StandardModel, fetch_one};
 
 #[derive(Debug)]
 pub struct User {
-    pub id: Uuid,
-    pub username: String,
-    pub email: String,
-    pub password: String,
-    pub salt: String,
+    pub id: Option<Uuid>,
+    pub username: Arc<str>,
+    pub email: Arc<str>,
+    pub password: Arc<str>,
+    pub salt: Option<Arc<str>>,
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn find_by_email(db: &Object, email: &str) -> Result<Option<User>, ApiError> {
-    let stmt = db
-        .prepare_cached(FIND_BY_EMAIL_SQL)
-        .instrument(tracing::info_span!(
-            "db.stmt",
-            db.system = "postgresql",
-            db.operation = "select"
-        ))
-        .await
-        .map_err(db_error)?;
+impl User {
+    #[must_use]
+    pub fn new(email: &str, username: &str, password: &str) -> Self {
+        Self {
+            id: None,
+            email: Arc::from(email),
+            password: Arc::from(password),
+            username: Arc::from(username),
+            salt: None,
+        }
+    }
 
-    let row = db
-        .query_opt(&stmt, &[&email])
-        .instrument(tracing::info_span!(
-            "db.query",
-            db.system = "postgresql",
-            db.sql = FIND_BY_EMAIL_SQL
-        ))
-        .await
-        .map_err(db_error)?;
+    /// Find a user by email.
+    ///
+    /// # Errors
+    /// Returns [`ApiError::Rejection`] with `404` when the user does not exist,
+    /// or a database error when the query fails.
+    #[tracing::instrument(skip_all)]
+    pub async fn get_by_email(db: &Object, email: &str) -> Result<Self, ApiError> {
+        fetch_one(db, GET_USER_BY_EMAIL_SQL, &[&email], "user not found").await
+    }
 
-    Ok(row.map(|r| User {
-        id: r.get("id"),
-        username: r.get("username"),
-        email: r.get("email"),
-        password: r.get("password"),
-        salt: r.get("salt"),
-    }))
+    /// Find a user by id.
+    ///
+    /// # Errors
+    /// Returns [`ApiError::Rejection`] with `404` when the user does not exist,
+    /// or a database error when the query fails.
+    #[tracing::instrument(skip_all)]
+    pub async fn get_by_id(db: &Object, id: Uuid) -> Result<Self, ApiError> {
+        fetch_one(db, GET_USER_BY_ID_SQL, &[&id], "user not found").await
+    }
 }
 
-pub async fn create(
-    db: &Object,
-    username: &str,
-    email: &str,
-    password: &str,
-) -> Result<Uuid, ApiError> {
-    let id = Uuid::now_v7();
-    let salt = SaltString::generate();
+#[async_trait]
+impl StandardModel for User {
+    type Id = Uuid;
 
-    let password_owned = password.to_owned();
-    let salt_clone = salt.clone();
-    let pw = tokio::task::spawn_blocking(move || {
-        let argon2 = crate::utils::get_argon();
-        argon2
-            .hash_password_with_salt(password_owned.as_bytes(), &salt_clone.to_salt())
-            .expect("password hashing should not fail")
-            .to_string()
-    })
-    .await
-    .map_err(|e| {
-        tracing::error!("spawn_blocking error in password hashing: {e}");
-        ApiError::Rejection(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal server error".into(),
-        )
-    })?;
+    #[tracing::instrument(skip_all)]
+    async fn create(&self, db: &Object) -> Result<Self::Id, ApiError> {
+        let id = Uuid::now_v7();
+        let salt = SaltString::generate();
+        let salt_value = salt.to_string();
 
-    let stmt = db
-        .prepare_cached(
-            "INSERT INTO users (id, username, email, password, salt) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .await
-        .map_err(db_error)?;
-
-    db.execute(&stmt, &[&id, &username, &email, &pw, &salt.as_ref()])
+        let password = self.password.to_string();
+        let hash = tokio::task::spawn_blocking(move || {
+            let argon2 = crate::utils::get_argon();
+            argon2
+                .hash_password_with_salt(password.as_bytes(), &salt.to_salt())
+                .map(|hash| hash.to_string())
+        })
         .await
         .map_err(|e| {
-            let Some(db_err) = e.as_db_error() else {
-                return db_error(e);
-            };
-
-            if *db_err.code() == SqlState::UNIQUE_VIOLATION {
-                return match db_err.constraint() {
-                    Some("users_username_key") => {
-                        ApiError::Rejection(StatusCode::CONFLICT, "users already exists".into())
-                    }
-                    Some("users_email_key") => {
-                        ApiError::Rejection(StatusCode::CONFLICT, "email already exists".into())
-                    }
-                    _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into()),
-                };
-            }
-
-            db_error(e)
+            tracing::error!("spawn_blocking error in password hashing: {e}");
+            ApiError::Rejection(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".into(),
+            )
+        })?
+        .map_err(|e| {
+            tracing::error!("password hashing failed: {e}");
+            ApiError::Rejection(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".into(),
+            )
         })?;
 
-    Ok(id)
+        let stmt = db.prepare_cached(CREATE_USER_SQL).await.map_err(db_error)?;
+
+        let username: &str = &self.username;
+        let email: &str = &self.email;
+
+        db.execute(&stmt, &[&id, &username, &email, &hash, &salt_value])
+            .await
+            .map_err(user_write_error)?;
+
+        Ok(id)
+    }
+}
+
+/// Map a unique violation on `users` to a conflict rejection.
+fn user_write_error(e: tokio_postgres::Error) -> ApiError {
+    let Some(db_err) = e.as_db_error() else {
+        return db_error(e);
+    };
+
+    if *db_err.code() == SqlState::UNIQUE_VIOLATION {
+        return match db_err.constraint() {
+            Some("users_username_key") => {
+                ApiError::Rejection(StatusCode::CONFLICT, "username already exists".into())
+            }
+            Some("users_email_key") => {
+                ApiError::Rejection(StatusCode::CONFLICT, "email already exists".into())
+            }
+            _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into()),
+        };
+    }
+
+    db_error(e)
+}
+
+impl FromRow for User {
+    fn from_row(r: &Row) -> Result<Self, ApiError> {
+        let id: Uuid = r.try_get("id").map_err(db_error)?;
+        let username: String = r.try_get("username").map_err(db_error)?;
+        let email: String = r.try_get("email").map_err(db_error)?;
+        let password: String = r.try_get("password").map_err(db_error)?;
+        let salt: Option<String> = r.try_get("salt").map_err(db_error)?;
+
+        Ok(Self {
+            id: Some(id),
+            username: Arc::from(username),
+            email: Arc::from(email),
+            password: Arc::from(password),
+            salt: salt.map(Arc::from),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_user_has_no_id_and_no_salt() {
+        let user = User::new("user@example.com", "user", "secret");
+
+        assert!(user.id.is_none());
+        assert!(user.salt.is_none());
+        assert_eq!(user.email.as_ref(), "user@example.com");
+        assert_eq!(user.username.as_ref(), "user");
+        assert_eq!(user.password.as_ref(), "secret");
+    }
 }
