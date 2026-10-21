@@ -42,11 +42,6 @@ exporters:
   debug:
     verbosity: detailed
 
-  otlp/jaeger:
-    endpoint: jaeger:4317
-    tls:
-      insecure: true
-
 service:
   telemetry:
     metrics:
@@ -56,7 +51,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp/tempo, debug, otlp/jaeger]
+      exporters: [otlp/tempo, debug]
 
     metrics:
       receivers: [otlp, prometheus]
