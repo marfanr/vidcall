@@ -1,58 +1,18 @@
-use std::fmt::Display;
-
 use axum::{
-    Json,
     body::{Body, Bytes},
     extract::FromRequest,
     http::{StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use serde::de::DeserializeOwned;
-use tracing::error;
-use validator::{Validate, ValidationErrors};
+use validator::Validate;
 
+pub mod error;
+pub mod metrics;
 pub mod server;
 mod v1;
-pub mod metrics;
 
-// Error response
-#[derive(Debug)]
-pub enum ApiError {
-    NotFound,
-    Validation(ValidationErrors),
-    Rejection(StatusCode, String),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        match self {
-            Self::NotFound => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(sonic_rs::json!({
-                    "error": "internal_error"
-                })),
-            )
-                .into_response(),
-
-            Self::Rejection(status, msg) => (
-                status,
-                Json(sonic_rs::json!({
-                    "error": msg
-                })),
-            )
-                .into_response(),
-
-            Self::Validation(val) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(sonic_rs::json!({
-                    "error": "validation fields",
-                    "fields": val,
-                })),
-            )
-                .into_response(),
-        }
-    }
-}
+pub use error::{ApiError, WsError, poll_error};
 
 #[doc = "simple used but not zero copy"]
 pub struct ValidateJson<T>(T);
@@ -90,36 +50,4 @@ impl<T: sonic_rs::Serialize> IntoResponse for FastJson<T> {
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "failed json").into_response(),
         }
     }
-}
-
-pub fn unavailable(_e: impl Display) -> ApiError {
-    ApiError::Rejection(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "service unavailable".to_string(),
-    )
-}
-
-pub fn poll_error(e: impl Display) -> ApiError {
-    error!("db pool: {e}");
-    ApiError::Rejection(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "service unavailable".to_string(),
-    )
-}
-
-pub fn db_error(e: tokio_postgres::Error) -> ApiError {
-    match e.as_db_error() {
-        Some(db) => error!(
-            sqlstate = db.code().code(),
-            message = db.message(),
-            detail = ?db.detail(),
-            table = ?db.table(),
-            column = ?db.column(),
-            constraint = ?db.constraint(),
-            "db error"
-        ),
-        None => error!(error = ?e, source = ?std::error::Error::source(&e), "db error"),
-    }
-
-    unavailable(e)
 }

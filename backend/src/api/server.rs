@@ -11,7 +11,6 @@ use axum::{
 
 use axum::extract::Request;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use axum_extra::TypedHeader;
 use dashmap::DashMap;
 use deadpool_postgres::Pool;
@@ -25,6 +24,8 @@ use tracing::info;
 
 use crate::api::metrics::{metrics_handler, track_metrics};
 use crate::api::{ApiError, v1};
+use crate::sfu::id::RoomId;
+use crate::sfu::room::RoomSfu;
 use crate::utils::{AccessClaims, verify_jwt};
 use headers::{Authorization, authorization::Bearer};
 use http::StatusCode;
@@ -44,9 +45,8 @@ impl ApiV1 {
 
 #[derive(Clone)]
 pub struct ServerState {
-    // pub rooms: Arc<DashMap<RoomId, Arc<Room>>>,
-    pub connections: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
-    pub pcs: Arc<DashMap<uuid::Uuid, Arc<dyn webrtc::peer_connection::PeerConnection>>>,
+    pub rooms: Arc<DashMap<uuid::Uuid, Arc<RoomSfu>>>,
+    pub wsconn: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
     pub pool: Pool,
     pub hash_sem: Arc<Semaphore>,
     pub allowed_origins: Arc<Vec<String>>,
@@ -55,9 +55,8 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(pool: Pool, allowed_origins: Vec<String>) -> Self {
         Self {
-            // rooms: Arc::default(),
-            connections: Arc::default(),
-            pcs: Arc::default(),
+            rooms: Arc::default(),
+            wsconn: Arc::default(),
             pool,
             hash_sem: Arc::new(Semaphore::new(4)),
             allowed_origins: Arc::new(allowed_origins),

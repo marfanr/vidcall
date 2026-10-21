@@ -61,9 +61,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = handle_args();
     if args.is_running_migration {
         // TODO: create migration
-        info!("run migrations");
+        todo!("run migrations");
         return Ok(());
     }
+
+    println!("sample id : {}", nanoid::nanoid!());
 
     init_metrics();
     run_server(state, 8080).await?;

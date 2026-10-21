@@ -1,8 +1,7 @@
-use crate::api::{ApiError, db_error};
-use crate::models::constant::{CREATE_ROOM_SQL, GET_ROOM_BY_ALIAS_SQL};
+use crate::models::ModelError;
+use crate::models::constant::{CREATE_ROOM_SQL, GET_ROOM_BY_ALIAS_SQL, GET_ROOM_BY_ID_SQL};
 use crate::models::{FromRow, StandardModel, fetch_one};
 use async_trait::async_trait;
-use axum::http::StatusCode;
 use deadpool_postgres::Object;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -48,23 +47,24 @@ impl Room {
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn get_by_alias(db: &Object, alias: &str) -> Result<Self, ApiError> {
+    pub async fn get_by_alias(db: &Object, alias: &str) -> Result<Self, ModelError> {
         fetch_one(db, GET_ROOM_BY_ALIAS_SQL, &[&alias], "room not found").await
     }
 
     /// Typed view over the options jsonb payload.
-    pub fn options_as<T: DeserializeOwned>(&self) -> Result<Option<T>, ApiError> {
+    pub fn options_as<T: DeserializeOwned>(&self) -> Result<Option<T>, ModelError> {
         let Some(options) = &self.options else {
             return Ok(None);
         };
 
         T::deserialize(options).map(Some).map_err(|e| {
             tracing::error!("invalid room options: {e}");
-            ApiError::Rejection(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid room options".into(),
-            )
+            ModelError::unprocessable("invalid room options")
         })
+    }
+
+    pub async fn get(db: &Object, id: Uuid) -> Result<Self, ModelError> {
+        fetch_one(db, GET_ROOM_BY_ID_SQL, &[&id], "room not found").await
     }
 }
 
@@ -73,8 +73,11 @@ impl StandardModel for Room {
     type Id = Uuid;
 
     #[tracing::instrument(skip_all)]
-    async fn create(&self, db: &Object) -> Result<Self::Id, ApiError> {
-        let stmt = db.prepare_cached(CREATE_ROOM_SQL).await.map_err(db_error)?;
+    async fn create(&self, db: &Object) -> Result<Self::Id, ModelError> {
+        let stmt = db
+            .prepare_cached(CREATE_ROOM_SQL)
+            .await
+            .map_err(ModelError::from)?;
 
         let alias: &str = &self.alias;
         let passcode: Option<&str> = self.passcode.as_deref();
@@ -89,37 +92,34 @@ impl StandardModel for Room {
             .await
             .map_err(room_write_error)?;
 
-        row.try_get("id").map_err(db_error)
+        row.try_get("id").map_err(ModelError::from)
     }
 }
 
-/// Map a unique/foreign key violation on room to a rejection.
-fn room_write_error(e: tokio_postgres::Error) -> ApiError {
+/// Map a unique/foreign key violation on room to a model error.
+fn room_write_error(e: tokio_postgres::Error) -> ModelError {
     let Some(db_err) = e.as_db_error() else {
-        return db_error(e);
+        return ModelError::Database(e);
     };
 
     match *db_err.code() {
-        SqlState::UNIQUE_VIOLATION => {
-            ApiError::Rejection(StatusCode::CONFLICT, "alias already exists".into())
+        SqlState::UNIQUE_VIOLATION => ModelError::conflict("alias already exists"),
+        SqlState::FOREIGN_KEY_VIOLATION => {
+            ModelError::unprocessable("user id does not exist")
         }
-        SqlState::FOREIGN_KEY_VIOLATION => ApiError::Rejection(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "user id does not exist".into(),
-        ),
-        _ => db_error(e),
+        _ => ModelError::Database(e),
     }
 }
 
 impl FromRow for Room {
-    fn from_row(r: &Row) -> Result<Self, ApiError> {
-        let id: Uuid = r.try_get("id").map_err(db_error)?;
-        let alias: String = r.try_get("alias").map_err(db_error)?;
-        let owner_id: Uuid = r.try_get("owner_id").map_err(db_error)?;
-        let passcode: Option<String> = r.try_get("passcode").map_err(db_error)?;
-        let title: Option<String> = r.try_get("title").map_err(db_error)?;
-        let options: Option<Value> = r.try_get("options").map_err(db_error)?;
-        let owner: Option<String> = r.try_get("owner").map_err(db_error)?;
+    fn from_row(r: &Row) -> Result<Self, ModelError> {
+        let id: Uuid = r.try_get("id").map_err(ModelError::from)?;
+        let alias: String = r.try_get("alias").map_err(ModelError::from)?;
+        let owner_id: Uuid = r.try_get("owner_id").map_err(ModelError::from)?;
+        let passcode: Option<String> = r.try_get("passcode").map_err(ModelError::from)?;
+        let title: Option<String> = r.try_get("title").map_err(ModelError::from)?;
+        let options: Option<Value> = r.try_get("options").map_err(ModelError::from)?;
+        let owner: Option<String> = r.try_get("owner").map_err(ModelError::from)?;
 
         Ok(Self {
             id: Some(id),

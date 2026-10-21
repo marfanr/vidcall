@@ -100,5 +100,6 @@ pub async fn warm_statements(c: &ClientWrapper) -> Result<(), tokio_postgres::Er
     c.prepare_cached(GET_ROOM_BY_ALIAS_SQL).await?;
     c.prepare_cached(GET_USER_BY_ID_SQL).await?;
     c.prepare_cached(CREATE_USER_SQL).await?;
+    c.prepare_cached(GET_ROOM_BY_ID_SQL).await?;
     Ok(())
 }

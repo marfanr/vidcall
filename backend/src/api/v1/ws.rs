@@ -1,11 +1,13 @@
+use crate::api::WsError;
 use crate::api::server::ServerState;
+use crate::models;
 use crate::sfu::peer::PcHandler;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
-use futures_util::{sink::SinkExt, stream::StreamExt};
+use futures_util::{TryFutureExt, sink::SinkExt, stream::StreamExt};
 use http::header::{ORIGIN, USER_AGENT};
 use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
@@ -22,9 +24,9 @@ use webrtc::runtime::TokioRuntime;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum WsMsg<'a> {
+enum WsMsg {
     Join {
-        room: &'a str,
+        room: Uuid,
     },
     Offer {
         sdp: String,
@@ -41,23 +43,39 @@ enum WsMsg<'a> {
     Leave,
 }
 
-impl<'a> WsMsg<'a> {
+impl WsMsg {
+    /// handle joining a room
     async fn handle_join(
-        room_id: &'a str,
+        room_id: Uuid,
         con_id: Uuid,
         state: &ServerState,
         self_sink: mpsc::Sender<Message>,
-    ) {
+    ) -> Result<(), WsError> {
         info!("join room={} from {}", room_id, con_id);
+        // created room object on memory only if owners already joined
+        let db = state
+            .pool
+            .get()
+            .map_err(|_| WsError(Arc::from("sasa")))
+            .await;
 
-        // let Some(_room) = state.rooms.get(room_id).map(|r| Arc::clone(r.value())) else {
-        //     return;
-        // };
+        // let room = models::room::Room::get(&db, room_id)
+        //     .map_err(|_err| WsError(Arc::from("room not found"))?
+        //     .await?;
+        //
+        // println!("join room={:?}", room);
 
         // r.connection.push(Arc::from(con_id.to_string()));
-        info!("joined room {}", room_id);
 
-        // TODO: send response back
+        // TODO: handle accept deny
+        self_sink
+            .send(Message::text(
+                sonic_rs::json!({ "type": "join", "accept": true }).to_string(),
+            ))
+            .await
+            .map_err(|e| format!("send answer: {e}"))?;
+
+        Ok(())
     }
 
     async fn handle_offer(
@@ -124,7 +142,7 @@ impl<'a> WsMsg<'a> {
             .await
             .map_err(|e| format!("send answer: {e}"))?;
 
-        state.pcs.insert(con_id, Arc::from(pc));
+        // state.pcs.insert(con_id, Arc::from(pc));
         Ok(())
     }
 }
@@ -161,7 +179,7 @@ async fn ws(
 async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerState, con_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(64);
-    state.connections.insert(con_id, tx.clone());
+    state.wsconn.insert(con_id, tx.clone());
 
     loop {
         tokio::select! {
@@ -169,9 +187,11 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
                 match incoming {
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                     Some(Ok(Message::Text(msg))) => {
-                        match sonic_rs::from_slice::<WsMsg<'_>>(msg.as_bytes()) {
+                        match sonic_rs::from_slice::<WsMsg>(msg.as_bytes()) {
                             Ok(WsMsg::Join { room }) => {
-                                WsMsg::handle_join(room, con_id, &state, tx.clone()).await;
+                                if let Err(e) = WsMsg::handle_join(room, con_id, &state, tx.clone()).await {
+                                    warn!("handle_offer: {e}");
+                                }
                             }
                             Ok(WsMsg::Offer { sdp }) => {
                                 if let Err(e) = WsMsg::handle_offer(&sdp, con_id, &state, tx.clone()).await {
@@ -180,24 +200,24 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
                             }
                             Ok(WsMsg::Candidate { candidate, line_index, mid, username_fragment }) => {
                                 info!("received candidate: {}", candidate);
-                                let pc = state.pcs.get(&con_id).map(|p| Arc::clone(p.value()));
-                                match pc {
-                                    Some(pc) => {
-                                        if let Err(e) = pc
-                                            .add_ice_candidate(webrtc::peer_connection::RTCIceCandidateInit {
-                                                candidate,
-                                                sdp_mid: mid,
-                                                sdp_mline_index: line_index,
-                                                username_fragment,
-                                                url: None,
-                                            })
-                                            .await
-                                        {
-                                            warn!("add_ice_candidate: {e}");
-                                        }
-                                    }
-                                    None => warn!("candidate before pc exists"),
-                                }
+                                // let pc = state.pcs.get(&con_id).map(|p| Arc::clone(p.value()));
+                                // match pc {
+                                //     Some(pc) => {
+                                //         if let Err(e) = pc
+                                //             .add_ice_candidate(webrtc::peer_connection::RTCIceCandidateInit {
+                                //                 candidate,
+                                //                 sdp_mid: mid,
+                                //                 sdp_mline_index: line_index,
+                                //                 username_fragment,
+                                //                 url: None,
+                                //             })
+                                //             .await
+                                //         {
+                                //             warn!("add_ice_candidate: {e}");
+                                //         }
+                                //     }
+                                //     None => warn!("candidate before pc exists"),
+                                // }
                             }
                             Ok(WsMsg::Leave) => break,
                             Ok(_) => {}
@@ -221,8 +241,8 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
         }
     }
 
-    state.connections.remove(&con_id);
-    state.pcs.remove(&con_id);
+    state.wsconn.remove(&con_id);
+    // state.pcs.remove(&con_id);
 
     info!("ws disconnected");
 }

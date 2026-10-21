@@ -1,27 +1,28 @@
-use crate::api::{ApiError, db_error};
 use async_trait::async_trait;
 use deadpool_postgres::Object;
 use futures_util::TryFutureExt;
-use http::StatusCode;
 use tokio_postgres::Row;
 use tokio_postgres::types::ToSql;
 use tracing::Instrument;
 
 pub mod conn;
 mod constant;
+pub mod error;
 pub mod refresh_tokens;
 pub mod room;
 pub mod user;
 
+pub use error::ModelError;
+
 pub trait FromRow: Sized {
-    fn from_row(row: &Row) -> Result<Self, ApiError>;
+    fn from_row(row: &Row) -> Result<Self, ModelError>;
 }
 
 pub async fn fetch_opt<T: FromRow>(
     db: &Object,
     sql: &'static str,
     params: &[&(dyn ToSql + Sync)],
-) -> Result<Option<T>, ApiError> {
+) -> Result<Option<T>, ModelError> {
     let stmt = db
         .prepare_cached(sql)
         .instrument(tracing::info_span!(
@@ -30,11 +31,11 @@ pub async fn fetch_opt<T: FromRow>(
             db.operation = "select"
         ))
         .await
-        .map_err(db_error)?;
+        .map_err(ModelError::from)?;
 
     let row = db
         .query_opt(&stmt, params)
-        .map_err(db_error)
+        .map_err(ModelError::from)
         .instrument(tracing::info_span!(
             "db.query",
             db.system = "postgresql",
@@ -50,14 +51,14 @@ pub async fn fetch_one<T: FromRow>(
     sql: &'static str,
     params: &[&(dyn ToSql + Sync)],
     not_found: &'static str,
-) -> Result<T, ApiError> {
+) -> Result<T, ModelError> {
     fetch_opt(db, sql, params)
         .await?
-        .ok_or_else(|| ApiError::Rejection(StatusCode::NOT_FOUND, not_found.to_owned()))
+        .ok_or_else(|| ModelError::not_found(not_found))
 }
 
 #[async_trait]
 pub trait StandardModel {
     type Id;
-    async fn create(&self, db: &Object) -> Result<Self::Id, ApiError>;
+    async fn create(&self, db: &Object) -> Result<Self::Id, ModelError>;
 }

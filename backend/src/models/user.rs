@@ -1,13 +1,12 @@
 use argon2::{PasswordHasher, password_hash::phc::SaltString};
 use async_trait::async_trait;
-use axum::http::StatusCode;
 use deadpool_postgres::Object;
 use std::sync::Arc;
 use tokio_postgres::Row;
 use tokio_postgres::error::SqlState;
 use uuid::Uuid;
 
-use crate::api::{ApiError, db_error};
+use crate::models::ModelError;
 use crate::models::constant::{CREATE_USER_SQL, GET_USER_BY_EMAIL_SQL, GET_USER_BY_ID_SQL};
 use crate::models::{FromRow, StandardModel, fetch_one};
 
@@ -35,20 +34,20 @@ impl User {
     /// Find a user by email.
     ///
     /// # Errors
-    /// Returns [`ApiError::Rejection`] with `404` when the user does not exist,
-    /// or a database error when the query fails.
+    /// Returns [`ModelError::NotFound`] when the user does not exist,
+    /// or [`ModelError::Database`] when the query fails.
     #[tracing::instrument(skip_all)]
-    pub async fn get_by_email(db: &Object, email: &str) -> Result<Self, ApiError> {
+    pub async fn get_by_email(db: &Object, email: &str) -> Result<Self, ModelError> {
         fetch_one(db, GET_USER_BY_EMAIL_SQL, &[&email], "user not found").await
     }
 
     /// Find a user by id.
     ///
     /// # Errors
-    /// Returns [`ApiError::Rejection`] with `404` when the user does not exist,
-    /// or a database error when the query fails.
+    /// Returns [`ModelError::NotFound`] when the user does not exist,
+    /// or [`ModelError::Database`] when the query fails.
     #[tracing::instrument(skip_all)]
-    pub async fn get_by_id(db: &Object, id: Uuid) -> Result<Self, ApiError> {
+    pub async fn get_by_id(db: &Object, id: Uuid) -> Result<Self, ModelError> {
         fetch_one(db, GET_USER_BY_ID_SQL, &[&id], "user not found").await
     }
 }
@@ -58,7 +57,7 @@ impl StandardModel for User {
     type Id = Uuid;
 
     #[tracing::instrument(skip_all)]
-    async fn create(&self, db: &Object) -> Result<Self::Id, ApiError> {
+    async fn create(&self, db: &Object) -> Result<Self::Id, ModelError> {
         let id = Uuid::now_v7();
         let salt = SaltString::generate();
         let salt_value = salt.to_string();
@@ -71,22 +70,13 @@ impl StandardModel for User {
                 .map(|hash| hash.to_string())
         })
         .await
-        .map_err(|e| {
-            tracing::error!("spawn_blocking error in password hashing: {e}");
-            ApiError::Rejection(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal server error".into(),
-            )
-        })?
-        .map_err(|e| {
-            tracing::error!("password hashing failed: {e}");
-            ApiError::Rejection(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal server error".into(),
-            )
-        })?;
+        .map_err(|e| ModelError::internal(format!("password hashing task failed: {e}")))?
+        .map_err(|e| ModelError::internal(format!("password hashing failed: {e}")))?;
 
-        let stmt = db.prepare_cached(CREATE_USER_SQL).await.map_err(db_error)?;
+        let stmt = db
+            .prepare_cached(CREATE_USER_SQL)
+            .await
+            .map_err(ModelError::from)?;
 
         let username: &str = &self.username;
         let email: &str = &self.email;
@@ -99,34 +89,30 @@ impl StandardModel for User {
     }
 }
 
-/// Map a unique violation on `users` to a conflict rejection.
-fn user_write_error(e: tokio_postgres::Error) -> ApiError {
+/// Map a unique violation on `users` to a conflict error.
+fn user_write_error(e: tokio_postgres::Error) -> ModelError {
     let Some(db_err) = e.as_db_error() else {
-        return db_error(e);
+        return ModelError::Database(e);
     };
 
     if *db_err.code() == SqlState::UNIQUE_VIOLATION {
         return match db_err.constraint() {
-            Some("users_username_key") => {
-                ApiError::Rejection(StatusCode::CONFLICT, "username already exists".into())
-            }
-            Some("users_email_key") => {
-                ApiError::Rejection(StatusCode::CONFLICT, "email already exists".into())
-            }
-            _ => ApiError::Rejection(StatusCode::CONFLICT, "already exists".into()),
+            Some("users_username_key") => ModelError::conflict("username already exists"),
+            Some("users_email_key") => ModelError::conflict("email already exists"),
+            _ => ModelError::conflict("already exists"),
         };
     }
 
-    db_error(e)
+    ModelError::Database(e)
 }
 
 impl FromRow for User {
-    fn from_row(r: &Row) -> Result<Self, ApiError> {
-        let id: Uuid = r.try_get("id").map_err(db_error)?;
-        let username: String = r.try_get("username").map_err(db_error)?;
-        let email: String = r.try_get("email").map_err(db_error)?;
-        let password: String = r.try_get("password").map_err(db_error)?;
-        let salt: Option<String> = r.try_get("salt").map_err(db_error)?;
+    fn from_row(r: &Row) -> Result<Self, ModelError> {
+        let id: Uuid = r.try_get("id").map_err(ModelError::from)?;
+        let username: String = r.try_get("username").map_err(ModelError::from)?;
+        let email: String = r.try_get("email").map_err(ModelError::from)?;
+        let password: String = r.try_get("password").map_err(ModelError::from)?;
+        let salt: Option<String> = r.try_get("salt").map_err(ModelError::from)?;
 
         Ok(Self {
             id: Some(id),
