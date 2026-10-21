@@ -22,6 +22,7 @@ pub struct Room {
     pub id: Option<Uuid>,
     pub alias: Arc<str>,
     pub owner_id: Uuid,
+    pub owner: Option<Arc<str>>,
     pub passcode: Option<Arc<str>>,
     pub title: Option<Arc<str>>,
     pub options: Option<Value>,
@@ -34,6 +35,7 @@ impl Room {
             alias: Arc::from(alias),
             owner_id,
             passcode: passcode.map(Arc::from),
+            owner: None,
             title: None,
             options: None,
         }
@@ -117,11 +119,13 @@ impl FromRow for Room {
         let passcode: Option<String> = r.try_get("passcode").map_err(db_error)?;
         let title: Option<String> = r.try_get("title").map_err(db_error)?;
         let options: Option<Value> = r.try_get("options").map_err(db_error)?;
+        let owner: Option<String> = r.try_get("owner").map_err(db_error)?;
 
         Ok(Self {
             id: Some(id),
             alias: Arc::from(alias),
             owner_id,
+            owner: owner.map(Arc::from),
             passcode: passcode.map(Arc::from),
             title: title.map(Arc::from),
             options,

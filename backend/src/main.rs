@@ -7,6 +7,7 @@ use crate::{
     api::server::{ServerState, run_server}, models::
     conn::{self, prewarm}, utils::init_keys,
 };
+use crate::models::conn::warm_statements;
 
 fn init_rustls() {
     let provider = rustls::crypto::ring::default_provider();
@@ -50,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     init_keys();
     let pool = conn::init_db()?;
-    prewarm(&pool, 4).await; 
+    prewarm(&pool, 4).await;
     
     let state = ServerState::new(pool, vec![
         "http://localhost:5173".to_string(),

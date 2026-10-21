@@ -90,15 +90,12 @@ async fn get_room(
     let db = state.pool.get().await.map_err(poll_error)?;
     let room = models::room::Room::get_by_alias(&db, p.as_str()).await?;
     let room_id = room.id.expect("room id must be provided");
-    let user = models::user::User::get_by_id(&db, room.owner_id).await?;
-
-    let username : &str = &user.username;
-
+    let owner  = room.owner.as_ref().expect("owner must be provided");
     Ok((
         StatusCode::OK,
         FastJson(GetRoomRes {
             id: room_id,
-            owner: user.username.to_string(),
+            owner: owner.to_string(),
         }),
     ))
 }

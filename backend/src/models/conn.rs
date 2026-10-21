@@ -4,6 +4,7 @@ use deadpool_postgres::{
     ClientWrapper, Config, Hook, HookError, ManagerConfig, Pool, PoolConfig, RecyclingMethod,
     Runtime, SslMode,
 };
+use futures_util::future::join_all;
 use rustls::{
     ClientConfig, RootCertStore,
     pki_types::{CertificateDer, pem::PemObject},
@@ -14,11 +15,20 @@ use crate::models::constant::*;
 
 pub async fn prewarm(pool: &Pool, n: usize) {
     let n = n.min(pool.status().max_size);
-    let conns = futures_util::future::join_all((0..n).map(|_| pool.get())).await;
-    tracing::info!(
-        ok = conns.iter().filter(|c| c.is_ok()).count(),
-        "pool prewarmed"
-    );
+
+    let conns = join_all((0..n).map(|_| pool.get())).await;
+
+    let results = join_all(conns.into_iter().map(|c| async move {
+        let conn = c.map_err(|e| e.to_string())?;
+        warm_statements(&conn).await.map_err(|e| e.to_string())
+    }))
+    .await;
+
+    let ok = results.iter().filter(|r| r.is_ok()).count();
+    for e in results.iter().filter_map(|r| r.as_ref().err()) {
+        tracing::warn!(error = %e, "prewarm failed");
+    }
+    tracing::info!(ok, requested = n, "pool prewarmed");
 }
 
 #[tracing::instrument()]
@@ -89,5 +99,6 @@ pub async fn warm_statements(c: &ClientWrapper) -> Result<(), tokio_postgres::Er
     c.prepare_cached(CREATE_ROOM_SQL).await?;
     c.prepare_cached(GET_ROOM_BY_ALIAS_SQL).await?;
     c.prepare_cached(GET_USER_BY_ID_SQL).await?;
+    c.prepare_cached(CREATE_USER_SQL).await?;
     Ok(())
 }
