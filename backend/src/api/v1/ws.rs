@@ -2,18 +2,21 @@ use crate::api::WsError;
 use crate::api::server::ServerState;
 use crate::models;
 use crate::sfu::peer::PcHandler;
+use crate::sfu::room::{RoomPeer, RoomSfu};
+use crate::utils::{AccessClaims, verify_jwt};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
+use axum_extra::extract::CookieJar;
 use futures_util::{TryFutureExt, sink::SinkExt, stream::StreamExt};
 use http::header::{ORIGIN, USER_AGENT};
 use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 use webrtc::peer_connection::crypto::providers::RingProvider;
 use webrtc::peer_connection::{
@@ -27,6 +30,7 @@ use webrtc::runtime::TokioRuntime;
 enum WsMsg {
     Join {
         room: Uuid,
+        token: Option<Arc<str>>,
     },
     Offer {
         sdp: String,
@@ -43,37 +47,90 @@ enum WsMsg {
     Leave,
 }
 
+async fn answer_join(sink: &mpsc::Sender<Message>, accept: bool) -> Result<(), WsError> {
+    sink.send(Message::text(
+        sonic_rs::json!({ "type": "join", "accept": accept}).to_string(),
+    ))
+    .map_err(|e| WsError::from(e))
+    .await
+}
+
 impl WsMsg {
     /// handle joining a room
     async fn handle_join(
         room_id: Uuid,
-        con_id: Uuid,
+        conn_id: Uuid,
+        token: Option<Arc<str>>,
         state: &ServerState,
         self_sink: mpsc::Sender<Message>,
     ) -> Result<(), WsError> {
-        info!("join room={} from {}", room_id, con_id);
-        // created room object on memory only if owners already joined
-        let db = state
-            .pool
-            .get()
-            .map_err(|_| WsError(Arc::from("sasa")))
-            .await;
+        let user_id = token
+            .as_deref()
+            .map(verify_jwt::<AccessClaims>)
+            .transpose()
+            .map_err(|e| WsError(Arc::from(e.to_string())))?
+            .map(|c| c.sub.parse::<Uuid>())
+            .transpose()
+            .map_err(|e| WsError(Arc::from(e.to_string())))?;
 
-        // let room = models::room::Room::get(&db, room_id)
-        //     .map_err(|_err| WsError(Arc::from("room not found"))?
-        //     .await?;
-        //
-        // println!("join room={:?}", room);
+        info!("join room={} from {} ", room_id, conn_id);
 
-        // r.connection.push(Arc::from(con_id.to_string()));
+        /// created room object on memory only if owners already joined
+        let db = state.pool.get().map_err(|e| WsError::from(e)).await?;
 
-        // TODO: handle accept deny
-        self_sink
-            .send(Message::text(
-                sonic_rs::json!({ "type": "join", "accept": true }).to_string(),
-            ))
-            .await
-            .map_err(|e| format!("send answer: {e}"))?;
+        /// gets the SFU Room if exist, or create it from db if available
+        let existing = state.rooms.get(&room_id).map(|r| Arc::clone(r.value()));
+        let room_arc = match existing {
+            Some(room) => room,
+            None => {
+                let model = models::room::Room::get(&db, room_id).await?;
+                let fresh = Arc::new(RoomSfu::from(&model));
+
+                if user_id != Some(fresh.owner_id) {
+                    return Err(WsError(Arc::from("room not started")));
+                }
+
+                let inserted = {
+                    let entry = state.rooms.entry(room_id).or_insert(fresh);
+                    Arc::clone(entry.value())
+                };
+                inserted
+            }
+        };
+        let room: &RoomSfu = room_arc.as_ref();
+
+        room.add_peer(Arc::new(RoomPeer {
+            conn_id,
+            user_id,
+            ws_tx: self_sink.clone(),
+        }));
+
+        state.conn_to_rooms.insert(conn_id, Arc::clone(&room_arc));
+
+        /// handle joining room request
+        /// if owner directy enter the room
+        if user_id == Some(room.owner_id) {
+            answer_join(&self_sink, true).await?;
+            return Ok(());
+        }
+
+        let username = match user_id {
+            Some(id) => models::user::User::get_by_id(&db, id)
+                .await
+                .map(|u| u.username)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(%id, error = %e, "failed to load user, using fallback name");
+                    Arc::from("anonymous")
+                }),
+            None => Arc::from("anonymous"),
+        };
+
+        /// if not owner send join requets to the owner of room
+        /// TODO!: check on options first, is the room need request to join or can join directly
+        room.send_to_owner(
+            conn_id,
+            Message::text(sonic_rs::json!({ "type": "request", "from": {"user_id": user_id, "username": username}}).to_string()),
+        );
 
         Ok(())
     }
@@ -172,14 +229,14 @@ async fn ws(
         .unwrap_or("Unknown")
         .to_owned();
 
-    let con_id = Uuid::now_v7();
-    Ok(ws.on_upgrade(move |socket| self::handle_socket(socket, user_agent, state, con_id)))
+    let conn_id = Uuid::now_v7();
+    Ok(ws.on_upgrade(move |socket| self::handle_socket(socket, user_agent, state, conn_id)))
 }
 
-async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerState, con_id: Uuid) {
+async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerState, conn_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(64);
-    state.wsconn.insert(con_id, tx.clone());
+    state.ws_conn.insert(conn_id, tx.clone());
 
     loop {
         tokio::select! {
@@ -188,13 +245,13 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
                     Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                     Some(Ok(Message::Text(msg))) => {
                         match sonic_rs::from_slice::<WsMsg>(msg.as_bytes()) {
-                            Ok(WsMsg::Join { room }) => {
-                                if let Err(e) = WsMsg::handle_join(room, con_id, &state, tx.clone()).await {
+                            Ok(WsMsg::Join { room, token }) => {
+                                if let Err(e) = WsMsg::handle_join(room, conn_id, token, &state, tx.clone()).await {
                                     warn!("handle_offer: {e}");
                                 }
                             }
                             Ok(WsMsg::Offer { sdp }) => {
-                                if let Err(e) = WsMsg::handle_offer(&sdp, con_id, &state, tx.clone()).await {
+                                if let Err(e) = WsMsg::handle_offer(&sdp, conn_id, &state, tx.clone()).await {
                                     warn!("handle_offer: {e}");
                                 }
                             }
@@ -241,8 +298,12 @@ async fn handle_socket(socket: WebSocket, _user_agent: String, state: ServerStat
         }
     }
 
-    state.wsconn.remove(&con_id);
-    // state.pcs.remove(&con_id);
+    // clear connection
+    state.ws_conn.remove(&conn_id);
+    if let Some(room) = state.conn_to_rooms.get(&conn_id) {
+        println!("delete {} from room", &conn_id);
+        room.drop_peer(conn_id);
+    }
 
     info!("ws disconnected");
 }

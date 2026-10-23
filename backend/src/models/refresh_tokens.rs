@@ -1,12 +1,13 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Object;
-use tracing::Instrument;
+use std::default;
+use tokio_postgres::Row;
 use uuid::Uuid;
 
-use crate::models::ModelError;
-use crate::models::constant::{CHECK_REUSE_AND_REVOKE_FAM_SQL, FIND_AND_MARK_SQL};
+use crate::models::constant::*;
+use crate::models::{FromRow, ModelError, exec, fetch_one, fetch_opt};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct RefreshToken {
     pub jti: Uuid,
     pub family_id: Uuid,
@@ -16,39 +17,21 @@ pub struct RefreshToken {
     pub expires_at: DateTime<Utc>,
     pub family_expires_at: DateTime<Utc>,
 }
+
 #[tracing::instrument(skip(db))]
 pub async fn find_and_mark_used(
     db: &Object,
     jti: Uuid,
     now: DateTime<Utc>,
-) -> Result<Result<RefreshToken, UsedOrNotFound>, ModelError> {
-    let stmt = db
-        .prepare_cached(FIND_AND_MARK_SQL)
-        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
-
-    let row = db
-        .query_opt(&stmt, &[&now, &jti, &now])
-        .instrument(tracing::info_span!("db.query", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
-
-    match row {
-        Some(r) => Ok(Ok(RefreshToken {
-            jti,
-            user_id: r.get("user_id"),
-            family_id: r.get("family_id"),
-            used_at: Some(now),
-            revoked_at: None,
-            expires_at: r.get("expires_at"),
-            family_expires_at: r.get("family_expires_at"),
-        })),
-        None => Ok(Err(UsedOrNotFound)),
-    }
+) -> Result<RefreshToken, ModelError> {
+    fetch_one(
+        db,
+        FIND_AND_MARK_SQL,
+        &[&now, &jti, &now],
+        "refresh token used or not found",
+    )
+    .await
 }
-
-pub struct UsedOrNotFound;
 
 #[tracing::instrument(skip(db))]
 pub async fn check_reuse_and_revoke_family(
@@ -56,23 +39,12 @@ pub async fn check_reuse_and_revoke_family(
     jti: Uuid,
     family_id: Uuid,
 ) -> Result<bool, ModelError> {
-    let check_stmt = db
-        .prepare_cached(CHECK_REUSE_AND_REVOKE_FAM_SQL)
-        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
-
-    let row = db
-        .query_opt(&check_stmt, &[&jti])
-        .instrument(tracing::info_span!("db.query", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
+    let row =
+        fetch_opt::<RefreshToken>(db, CHECK_REUSE_AND_REVOKE_FAM_SQL, &[&jti]).await?;
 
     match row {
         Some(r) => {
-            let used_at: Option<DateTime<Utc>> = r.get("used_at");
-            let revoked_at: Option<DateTime<Utc>> = r.get("revoked_at");
-            if used_at.is_some() || revoked_at.is_some() {
+            if r.used_at.is_some() || r.revoked_at.is_some() {
                 revoke_family(db, family_id).await?;
                 return Ok(true);
             }
@@ -84,52 +56,48 @@ pub async fn check_reuse_and_revoke_family(
 
 #[tracing::instrument(skip(db))]
 pub async fn revoke(db: &Object, jti: Uuid) -> Result<(), ModelError> {
-    let stmt = db
-        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE jti = $2")
-        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
-    db.execute(&stmt, &[&Utc::now(), &jti])
-        .await
-        .map_err(ModelError::from)?;
-    Ok(())
+    exec(db, REVOKE_SQL, &[&Utc::now(), &jti]).await
 }
 
 pub async fn revoke_family(db: &Object, family_id: Uuid) -> Result<(), ModelError> {
-    let stmt = db
-        .prepare_cached("UPDATE refresh_tokens SET revoked_at = $1 WHERE family_id = $2")
-        .await
-        .map_err(ModelError::from)?;
-    db.execute(&stmt, &[&Utc::now(), &family_id])
-        .await
-        .map_err(ModelError::from)?;
-    Ok(())
+    exec(db, REVOKE_FAMILY_SQL, &[&Utc::now(), &family_id]).await
 }
 
-#[tracing::instrument(skip(db))]
+#[tracing::instrument(skip_all)]
 pub async fn publish(
-    db: Object,
+    db: &Object,
     user_id: Uuid,
     jti: Uuid,
     family_id: Uuid,
     expires_at: DateTime<Utc>,
     family_expires_at: DateTime<Utc>,
 ) -> Result<(), ModelError> {
-    let stmt = db
-        .prepare_cached(
-            "INSERT INTO refresh_tokens (user_id, jti, family_id, expires_at, family_expires_at) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
-        .await
-        .map_err(ModelError::from)?;
-
-    db.execute(
-        &stmt,
+    exec(
+        db,
+        PUBLISH_REFRESH_TOKEN_SQL,
         &[&user_id, &jti, &family_id, &expires_at, &family_expires_at],
     )
     .await
-    .map_err(ModelError::from)?;
-    Ok(())
+}
+
+impl FromRow for RefreshToken {
+    fn from_row(r: &Row) -> Result<Self, ModelError> {
+        let user_id: Uuid = r.try_get("user_id").map_err(ModelError::from)?;
+        let jti: Uuid = r.try_get("jti").map_err(ModelError::from)?;
+        let family_id: Uuid = r.try_get("family_id").map_err(ModelError::from)?;
+        let expires_at: DateTime<Utc> = r.try_get("expires_at").map_err(ModelError::from)?;
+        let family_expires_at: DateTime<Utc> =
+            r.try_get("family_expires_at").map_err(ModelError::from)?;
+
+        Ok(Self {
+            user_id,
+            family_id,
+            expires_at,
+            family_expires_at,
+            jti,
+            ..default::Default::default()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -288,17 +256,6 @@ mod tests {
         };
 
         assert_eq!(token1, token2);
-    }
-
-    #[test]
-    fn test_used_or_not_found_struct() {
-        let _ = UsedOrNotFound;
-    }
-
-    #[test]
-    fn test_used_or_not_found_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<UsedOrNotFound>();
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::models::ModelError;
 use crate::models::constant::{CREATE_ROOM_SQL, GET_ROOM_BY_ALIAS_SQL, GET_ROOM_BY_ID_SQL};
 use crate::models::{FromRow, StandardModel, fetch_one};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use deadpool_postgres::Object;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ pub struct RoomOption {
     pub max_participants: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Room {
     pub id: Option<Uuid>,
     pub alias: Arc<str>,
@@ -24,6 +25,7 @@ pub struct Room {
     pub owner: Option<Arc<str>>,
     pub passcode: Option<Arc<str>>,
     pub title: Option<Arc<str>>,
+    pub start_at: Option<DateTime<Utc>>,
     pub options: Option<Value>,
 }
 
@@ -37,10 +39,10 @@ impl Room {
             owner: None,
             title: None,
             options: None,
+            start_at: None,
         }
     }
 
-    /// Attach the options jsonb payload of the room.
     pub fn with_options(mut self, options: Value) -> Self {
         self.options = Some(options);
         self
@@ -51,7 +53,6 @@ impl Room {
         fetch_one(db, GET_ROOM_BY_ALIAS_SQL, &[&alias], "room not found").await
     }
 
-    /// Typed view over the options jsonb payload.
     pub fn options_as<T: DeserializeOwned>(&self) -> Result<Option<T>, ModelError> {
         let Some(options) = &self.options else {
             return Ok(None);
@@ -96,7 +97,6 @@ impl StandardModel for Room {
     }
 }
 
-/// Map a unique/foreign key violation on room to a model error.
 fn room_write_error(e: tokio_postgres::Error) -> ModelError {
     let Some(db_err) = e.as_db_error() else {
         return ModelError::Database(e);
@@ -104,12 +104,11 @@ fn room_write_error(e: tokio_postgres::Error) -> ModelError {
 
     match *db_err.code() {
         SqlState::UNIQUE_VIOLATION => ModelError::conflict("alias already exists"),
-        SqlState::FOREIGN_KEY_VIOLATION => {
-            ModelError::unprocessable("user id does not exist")
-        }
+        SqlState::FOREIGN_KEY_VIOLATION => ModelError::unprocessable("user id does not exist"),
         _ => ModelError::Database(e),
     }
 }
+
 
 impl FromRow for Room {
     fn from_row(r: &Row) -> Result<Self, ModelError> {
@@ -120,6 +119,7 @@ impl FromRow for Room {
         let title: Option<String> = r.try_get("title").map_err(ModelError::from)?;
         let options: Option<Value> = r.try_get("options").map_err(ModelError::from)?;
         let owner: Option<String> = r.try_get("owner").map_err(ModelError::from)?;
+        let start_at: Option<DateTime<Utc>> = r.try_get("start_at").map_err(ModelError::from)?;
 
         Ok(Self {
             id: Some(id),
@@ -129,6 +129,7 @@ impl FromRow for Room {
             passcode: passcode.map(Arc::from),
             title: title.map(Arc::from),
             options,
+            start_at,
         })
     }
 }

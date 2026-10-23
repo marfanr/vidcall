@@ -7,13 +7,12 @@ use axum::{
     middleware,
     routing::{get, post},
 };
-use std::borrow::Cow;
-
 use sonic_rs::{Deserialize, Serialize};
+use std::borrow::Cow;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::api::server::bearer_middleware;
+use crate::api::server::{bearer_middleware, optional_bearer_middleware};
 use crate::api::{
     ApiError::{self},
     FastJson, poll_error,
@@ -47,13 +46,25 @@ struct CreateRoomRes {
 struct GetRoomRes {
     id: Uuid,
     owner: String,
+    is_started: bool,
+}
+
+fn secured_routes() -> Router<ServerState> {
+    Router::new()
+        .route("/", post(self::create_room))
+        .layer(middleware::from_fn(bearer_middleware))
+}
+
+pub fn unsecured_routes() -> Router<ServerState> {
+    Router::new()
+        .route("/{id}", get(self::get_room))
+        .route_layer(middleware::from_fn(optional_bearer_middleware))
 }
 
 pub fn routes() -> Router<ServerState> {
     Router::new()
-        .route("/", post(self::create_room))
-        .route("/{id}", get(self::get_room))
-        .layer(middleware::from_fn(bearer_middleware))
+        .merge(unsecured_routes())
+        .merge(secured_routes())
 }
 
 #[tracing::instrument(skip(state))]
@@ -84,18 +95,26 @@ async fn create_room(
 
 #[tracing::instrument(skip(state))]
 async fn get_room(
+    Extension(claims): Extension<Option<AccessClaims>>,
     State(state): State<ServerState>,
     Path(p): Path<String>,
 ) -> Result<(StatusCode, FastJson<GetRoomRes>), ApiError> {
     let db = state.pool.get().await.map_err(poll_error)?;
     let room = models::room::Room::get_by_alias(&db, p.as_str()).await?;
     let room_id = room.id.expect("room id must be provided");
-    let owner  = room.owner.as_ref().expect("owner must be provided");
+    let owner = room.owner.as_ref().expect("owner must be provided");
+
+    /// **TODO!: allow for anonymous user based on room options**
+    let user_id: Option<Uuid> = claims.and_then(|c| c.sub.parse().ok());
+    let is_owner = user_id.is_some_and(|id| room.owner_id == id);
+    let is_started = is_owner || room.start_at.is_some() || state.rooms.get(&room_id).is_some();
+
     Ok((
         StatusCode::OK,
         FastJson(GetRoomRes {
             id: room_id,
             owner: owner.to_string(),
+            is_started,
         }),
     ))
 }
