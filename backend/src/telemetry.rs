@@ -21,7 +21,10 @@ pub fn init_telemetry() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
     let tracer = tracer_provider.tracer("vidcall-backend");
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_env("LOG").unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_env("LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .with(tracing_subscriber::fmt::layer())
         .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .init();

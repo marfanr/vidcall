@@ -2,6 +2,10 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::extract::ws::Message;
+use deadpool_postgres::PoolError;
+use tokio::sync::mpsc::error::SendError;
+use tokio_postgres::error::DbError;
 use tracing::error;
 use validator::ValidationErrors;
 
@@ -78,6 +82,24 @@ impl std::fmt::Display for WsError {
 impl From<String> for WsError {
     fn from(s: String) -> Self {
         Self(Arc::from(s))
+    }
+}
+
+impl From<ModelError> for WsError {
+    fn from(value: ModelError) -> Self {
+        Self(Arc::from(value.to_string()))
+    }
+}
+
+impl From<PoolError> for WsError {
+    fn from(value: PoolError) -> Self {
+        Self(Arc::from(value.to_string()))
+    }
+}
+
+impl From<tokio::sync::mpsc::error::SendError<axum::extract::ws::Message>> for WsError {
+    fn from(value: SendError<Message>) -> Self {
+        Self(Arc::from(value.to_string()))
     }
 }
 
