@@ -62,3 +62,5 @@ impl From<tokio_postgres::Error> for ModelError {
         Self::Database(e)
     }
 }
+
+pub struct UsedOrNotFound;

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use deadpool_postgres::Object;
 use futures_util::TryFutureExt;
 use tokio_postgres::Row;
@@ -55,6 +56,20 @@ pub async fn fetch_one<T: FromRow>(
     fetch_opt(db, sql, params)
         .await?
         .ok_or_else(|| ModelError::not_found(not_found))
+}
+
+pub async fn exec(
+    db: &Object,
+    sql: &'static str,
+    params: &[&(dyn ToSql + Sync)],
+) -> Result<(), ModelError> {
+    let stmt = db
+        .prepare_cached(sql)
+        .instrument(tracing::info_span!("db.stmt", db.system = "postgresql"))
+        .await
+        .map_err(ModelError::from)?;
+    db.execute(&stmt, params).await.map_err(ModelError::from)?;
+    Ok(())
 }
 
 #[async_trait]
