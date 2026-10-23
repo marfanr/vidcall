@@ -98,7 +98,7 @@ fn user_write_error(e: tokio_postgres::Error) -> ModelError {
     if *db_err.code() == SqlState::UNIQUE_VIOLATION {
         return match db_err.constraint() {
             Some("users_username_key") => ModelError::conflict("username already exists"),
-            Some("users_email_key") => ModelError::conflict("email already exists"),
+            Some("useUsedOrNotFoundrs_email_key") => ModelError::conflict("email already exists"),
             _ => ModelError::conflict("already exists"),
         };
     }

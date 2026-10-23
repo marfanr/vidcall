@@ -15,6 +15,7 @@ use crate::{
     models::{refresh_tokens as rt, user},
     utils::{FAMILY_TTL, REFRESH_TTL, RefreshClaims, get_argon, sign_pair, verify_jwt},
 };
+use crate::models::ModelError;
 
 #[derive(sonic_rs::Deserialize, Validate)]
 struct SignInRequest<'a> {
@@ -115,7 +116,7 @@ async fn signin(
     let family_expires_at = now + FAMILY_TTL;
     let expires_at = (now + REFRESH_TTL).min(family_expires_at);
 
-    rt::publish(db, user_id, jti, family_id, expires_at, family_expires_at).await?;
+    rt::publish(&db, user_id, jti, family_id, expires_at, family_expires_at).await?;
 
     let cookie = Cookie::build(("refresh_token", sign.refresh_token))
         .http_only(true)
@@ -173,9 +174,9 @@ async fn refresh_token(
 
     let now = Utc::now();
 
-    let token = match rt::find_and_mark_used(&db, jti, now).await? {
+    let token = match rt::find_and_mark_used(&db, jti, now).await {
         Ok(token) => token,
-        Err(rt::UsedOrNotFound) => {
+        Err(_) => {
             let reused = rt::check_reuse_and_revoke_family(&db, jti, family_id).await?;
             if reused {
                 return Err(ApiError::NotFound);
@@ -196,7 +197,7 @@ async fn refresh_token(
     })?;
 
     rt::publish(
-        db,
+        &db,
         user_id,
         new_jti,
         family_id,

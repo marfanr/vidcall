@@ -24,7 +24,6 @@ use tracing::info;
 
 use crate::api::metrics::{metrics_handler, track_metrics};
 use crate::api::{ApiError, v1};
-use crate::sfu::id::RoomId;
 use crate::sfu::room::RoomSfu;
 use crate::utils::{AccessClaims, verify_jwt};
 use headers::{Authorization, authorization::Bearer};
@@ -45,8 +44,11 @@ impl ApiV1 {
 
 #[derive(Clone)]
 pub struct ServerState {
+    /// room id to rooms
     pub rooms: Arc<DashMap<uuid::Uuid, Arc<RoomSfu>>>,
-    pub wsconn: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
+    /// conn id to rooms
+    pub conn_to_rooms: Arc<DashMap<uuid::Uuid, Arc<RoomSfu>>>,
+    pub ws_conn: Arc<DashMap<uuid::Uuid, mpsc::Sender<Message>>>,
     pub pool: Pool,
     pub hash_sem: Arc<Semaphore>,
     pub allowed_origins: Arc<Vec<String>>,
@@ -56,9 +58,10 @@ impl ServerState {
     pub fn new(pool: Pool, allowed_origins: Vec<String>) -> Self {
         Self {
             rooms: Arc::default(),
-            wsconn: Arc::default(),
+            ws_conn: Arc::default(),
             pool,
             hash_sem: Arc::new(Semaphore::new(4)),
+            conn_to_rooms: Arc::default(),
             allowed_origins: Arc::new(allowed_origins),
         }
     }
@@ -72,7 +75,6 @@ pub async fn run_server(state: ServerState, port: u16) -> std::io::Result<()> {
         .collect();
 
     let cors = CorsLayer::new()
-        // TODO: add BASE URL on .env
         .allow_origin(cors_origins)
         .allow_credentials(true)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -100,6 +102,30 @@ pub async fn bearer_middleware(
     let Ok(claims) = verify_jwt::<AccessClaims>(auth.token()) else {
         return ApiError::Rejection(StatusCode::UNAUTHORIZED, "invalid bearer token".to_owned())
             .into_response();
+    };
+
+    req.extensions_mut().insert(claims);
+
+    next.run(req).await
+}
+
+pub async fn optional_bearer_middleware(
+    auth: Option<TypedHeader<Authorization<Bearer>>>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let claims: Option<AccessClaims> = match auth {
+        None => None,
+        Some(TypedHeader(auth)) => match verify_jwt::<AccessClaims>(auth.token()) {
+            Ok(claims) => Some(claims),
+            Err(_) => {
+                return ApiError::Rejection(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid bearer token".to_owned(),
+                )
+                    .into_response();
+            }
+        },
     };
 
     req.extensions_mut().insert(claims);
