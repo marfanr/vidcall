@@ -29,7 +29,7 @@ const emit = defineEmits<{
         :key="request.conn_id"
         role="status"
         aria-live="polite"
-        class="fixed bottom-4 right-4 z-99 w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200/80 bg-white p-4 shadow-xl ring-1 ring-black/5"
+        class="fixed bottom-16 md:bottom-4 right-4 z-99 w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-gray-200/80 bg-white p-4 shadow-xl ring-1 ring-black/5"
       >
         <div class="flex items-start gap-3">
           <div

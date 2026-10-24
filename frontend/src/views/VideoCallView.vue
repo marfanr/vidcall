@@ -40,14 +40,14 @@ const roomStatus = computed<'denied' | 'waiting' | 'not-started' | 'not-found'>(
 <template>
   <div
     v-if="room.status === 'loading'"
-    class="relative flex flex-col w-screen h-screen bg-gray-100 items-center justify-center"
+    class="relative flex flex-col w-full h-dvh bg-gray-100 items-center justify-center overflow-hidden"
   >
     Please Wait
   </div>
 
-  <div v-else-if="room.status === 'joined'" class="flex flex-col w-screen h-screen bg-gray-100">
-    <CallHeader :roomTitle="room.title" />
-    <VideoGrid :participants="participants" />
+  <div v-else-if="room.status === 'joined'" class="flex flex-col w-full h-dvh bg-gray-100 overflow-hidden">
+    <CallHeader :roomTitle="room.title" class="shrink-0" />
+    <VideoGrid :participants="participants" class="flex-1 min-h-0" />
     <FloatingReactions :reactions="floating" />
 
     <JoinRequestToast
@@ -64,6 +64,7 @@ const roomStatus = computed<'denied' | 'waiting' | 'not-started' | 'not-found'>(
       @toggle-camera="toggleCamera"
       @hangup="hangup"
       @select-reaction="showReaction"
+      class="shrink-0"
     />
   </div>
 
