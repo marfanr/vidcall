@@ -1,15 +1,15 @@
 <script setup lang="ts">
+import InputElement from '@/components/ui/InputElement.vue'
+import { api } from '@/lib/axios'
+import { useAuthStore } from '@/stores/auth'
+import { toTypedSchema } from '@vee-validate/zod'
 import { WebcamIcon } from 'lucide-vue-next'
+import { useField, useForm } from 'vee-validate'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '@/lib/axios'
-import { useForm, useField } from 'vee-validate'
-import { toTypedSchema } from '@vee-validate/zod'
 import * as z from 'zod'
-import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
-const showPassword = ref(false)
 const loading = ref(false)
 
 const { handleSubmit, setFieldError } = useForm({
@@ -88,11 +88,11 @@ const onSubmit = handleSubmit(async (values) => {
 
         <div class="text-center">
           <p class="text-3xl font-semibold tracking-tight" style="font-family: var(--font-heading)">
-            Speedy, Easy and Fast
+            Self-Hosted Video Meetings
           </p>
           <p class="mx-auto mt-3 max-w-sm text-xs leading-relaxed text-white/80">
-            Overpay helps you set saving goals, earn cash back offers, and get paychecks up to two
-            days early.
+            Your own private video conferencing platform. Full control, end-to-end encryption, and
+            no third-party dependencies.
           </p>
           <div class="mt-5 flex justify-center gap-1.5" aria-hidden="true">
             <span class="size-1 rounded-full bg-white/40"></span>
@@ -115,78 +115,21 @@ const onSubmit = handleSubmit(async (values) => {
           </div>
 
           <form class="mt-6 flex flex-col gap-3" @submit="onSubmit" novalidate>
-            <div>
-              <label for="email" class="sr-only">Email</label>
-              <input
-                id="email"
-                v-model="email"
-                type="email"
-                autocomplete="email"
-                placeholder="Email"
-                :aria-invalid="!!emailError"
-                :aria-describedby="emailError ? 'email-error' : undefined"
-                class="h-11 w-full rounded-lg border border-slate-200 bg-white px-4 text-sm placeholder:text-slate-500 transition focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-              <p v-if="emailError" id="email-error" class="mt-1 text-xs text-red-600">
-                {{ emailError }}
-              </p>
-            </div>
+            <InputElement
+              v-model="email"
+              label="Email"
+              type="email"
+              autocomplete="email"
+              :error="emailError"
+            />
 
-            <div>
-              <label for="password" class="sr-only">Password</label>
-              <div class="relative">
-                <input
-                  id="password"
-                  v-model="password"
-                  :type="showPassword ? 'text' : 'password'"
-                  autocomplete="current-password"
-                  placeholder="Password"
-                  :aria-invalid="!!passwordError"
-                  :aria-describedby="passwordError ? 'password-error' : undefined"
-                  class="h-11 w-full rounded-lg border border-slate-200 bg-white pl-4 pr-11 text-sm placeholder:text-slate-500 transition focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                />
-
-                <button
-                  type="button"
-                  class="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-500 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
-                  :aria-label="showPassword ? 'Hide password' : 'Show password'"
-                  @click="showPassword = !showPassword"
-                >
-                  <svg
-                    v-if="!showPassword"
-                    class="size-4"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M2 12s3.500-7 10-7 10 7 10 7-3.500 7-10 7S2 12 2 12z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                  <svg
-                    v-else
-                    class="size-4"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M17.940 17.940A10.940 10.940 0 0 1 12 19c-6.500 0-10-7-10-7a18.500 18.500 0 0 1 5.060-5.940M9.900 4.240A9.120 9.120 0 0 1 12 5c6.500 0 10 7 10 7a18.500 18.500 0 0 1-2.160 3.190M1 1l22 22"
-                    />
-                  </svg>
-                </button>
-              </div>
-              <p v-if="passwordError" id="password-error" class="mt-1 text-xs text-red-600">
-                {{ passwordError }}
-              </p>
-            </div>
+            <InputElement
+              v-model="password"
+              label="password"
+              type="password"
+              autocomplete="password"
+              :error="passwordError"
+            />
 
             <div class="flex justify-end">
               <a href="#" class="text-xs text-slate-600 hover:text-slate-900">Forgot password?</a>
@@ -204,7 +147,7 @@ const onSubmit = handleSubmit(async (values) => {
 
           <p class="mt-6 text-center text-sm text-slate-700">
             Don't have an account?
-            <a href="#" class="font-semibold text-slate-900 hover:underline">Sign Up</a>
+            <a href="/signup" class="font-semibold text-slate-900 hover:underline">Sign Up</a>
           </p>
         </div>
 
