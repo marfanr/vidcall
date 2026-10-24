@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import VideoCallView from '../views/VideoCallView.vue'
 import HomeView from '@/views/HomeView.vue'
 import SigninView from '@/views/SigninView.vue'
+import SignupView from '@/views/SignupView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -23,12 +24,19 @@ const router = createRouter({
       },
     },
     {
+      path: '/signup',
+      component: SignupView,
+      meta: {
+        title: 'Sign-up',
+      },
+    },
+    {
       path: '/meet/:id',
       name: 'video-call',
       component: VideoCallView,
       meta: {
         title: 'Video Call',
-        requiresAuth: true,
+        requiresAuth: false,
       },
     },
   ],
@@ -36,10 +44,10 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  const restored = await auth.refreshAccessToken()
 
   if (to.meta.requiresAuth && !auth.authenticated) {
     // one-shot restore from the httpOnly refresh cookie
-    const restored = await auth.refreshAccessToken()
     if (!restored) {
       return { path: '/signin' }
     }
