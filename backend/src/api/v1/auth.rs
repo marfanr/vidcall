@@ -135,7 +135,7 @@ async fn signin(
     ))
 }
 
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip_all)]
 async fn refresh_token(
     State(state): State<ServerState>,
     jar: CookieJar,
