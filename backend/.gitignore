@@ -3,3 +3,4 @@
 .env
 certs/
 otel/bearer_token.env
+md
