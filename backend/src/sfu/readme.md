@@ -6,7 +6,7 @@ This module is intended for SFU (Selective Forwarding Unit) implementation to ha
 
 ### Planned Features
 
-- [ ] Media routing/switching
+- [x] Media routing/switching
 - [ ] Recording support
 - [ ] Transcoding
 - [ ] Scalability for many participants
