@@ -40,6 +40,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde_json = "1"
 headers = "0.4.2"
 jemalloc-ctl = "0.5.4"
+rtc = "0.21.1"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = { version = "0.5.4", features = ["stats", "background_threads"] }
