@@ -27,6 +27,7 @@ export function useLocalMedia(participants: Ref<Participant[]>) {
     const me = getMe()
     if (!me) return
 
+    // turn off
     if (!me.cameraOff) {
       localStream?.getVideoTracks().forEach((t) => {
         t.stop()
@@ -36,6 +37,7 @@ export function useLocalMedia(participants: Ref<Participant[]>) {
       return
     }
 
+    // turn on
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -43,6 +45,11 @@ export function useLocalMedia(participants: Ref<Participant[]>) {
       })
 
       const videoTrack = stream.getVideoTracks()[0]
+      await videoTrack?.applyConstraints({
+        frameRate: { ideal: 60, min: 10, max: 120 },
+        width: 1280,
+        height: 720,
+      })
 
       if (videoTrack) {
         localStream ??= new MediaStream()
@@ -56,5 +63,41 @@ export function useLocalMedia(participants: Ref<Participant[]>) {
     }
   }
 
-  return { cameraOn, micOn, init, toggleCamera, getMe }
+  const toggleMic = async () => {
+    const me = getMe()
+    if (!me) return
+
+    // mute
+    if (!me.muted) {
+      localStream?.getAudioTracks().forEach((t) => {
+        t.stop()
+        localStream?.removeTrack(t)
+      })
+      me.muted = true
+      return
+    }
+
+    // unmute
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: true,
+      })
+
+      const audioTrack = stream.getAudioTracks()[0]
+      if (audioTrack) {
+        localStream ??= new MediaStream()
+        localStream.addTrack(audioTrack)
+        me.stream = localStream
+      }
+
+      me.muted = false
+    } catch (e) {
+      console.log(e)
+      return
+    }
+  }
+
+  return { cameraOn, micOn, init, toggleCamera, toggleMic, getMe }
 }

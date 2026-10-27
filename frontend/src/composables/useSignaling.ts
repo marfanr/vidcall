@@ -9,8 +9,10 @@ export function useSignaling() {
 
   const messageHandlers = new Set<MessageHandler>()
 
-  // placeholder signaling for WebRTC
-  const send = (obj: unknown) => obj
+  /// generic signaling sender, used by the webrtc layer (ice candidates)
+  const send = (obj: unknown) => {
+    ws.send(obj as object)
+  }
 
   const onMessage = (handler: MessageHandler) => {
     messageHandlers.add(handler)
@@ -37,5 +39,13 @@ export function useSignaling() {
     ws.send({ type: 'leave', room })
   }
 
-  return { ws, send, onMessage, join, answerRequest, leave, close }
+  const sendOffer = (offer: string) => {
+    ws.send({ type: 'offer', sdp: offer })
+  }
+
+  const sendAnswer = (answer: string) => {
+    ws.send({ type: 'answer', sdp: answer })
+  }
+
+  return { ws, send, onMessage, join, answerRequest, leave, close, sendOffer, sendAnswer }
 }

@@ -22,9 +22,12 @@ const {
   showReaction,
   resolveRequest,
   toggleCamera,
+  toggleMic,
+  muted,
   hangup,
   memberChangesData,
   resolveNewMembers,
+  sendControl,
 } = useVideoCallRoom(() => route.params.id)
 
 const roomParamId = computed(() => String(route.params.id))
@@ -45,7 +48,10 @@ const roomStatus = computed<'denied' | 'waiting' | 'not-started' | 'not-found'>(
     Please Wait
   </div>
 
-  <div v-else-if="room.status === 'joined'" class="flex flex-col w-full h-dvh bg-gray-100 overflow-hidden">
+  <div
+    v-else-if="room.status === 'joined'"
+    class="flex flex-col w-full h-dvh bg-gray-100 overflow-hidden"
+  >
     <CallHeader :roomTitle="room.title" class="shrink-0" />
     <VideoGrid :participants="participants" class="flex-1 min-h-0" />
     <FloatingReactions :reactions="floating" />
@@ -61,10 +67,13 @@ const roomStatus = computed<'denied' | 'waiting' | 'not-started' | 'not-found'>(
 
     <CallControls
       :camera-off="cameraOff"
+      :muted="muted"
       @toggle-camera="toggleCamera"
+      @toggle-mic="toggleMic"
       @hangup="hangup"
       @select-reaction="showReaction"
       class="shrink-0"
+      @send-control="sendControl"
     />
   </div>
 
