@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, type ComponentPublicInstance } from 'vue'
+import { ref, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { MicIcon, MicOffIcon } from 'lucide-vue-next'
 import type { Participant } from '@/types/video-call'
 
@@ -9,19 +9,54 @@ const props = defineProps<{
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
+const audioRef = ref<HTMLAudioElement | null>(null)
 
-const setStream = () => {
+const setVideoStream = async () => {
+  await nextTick()
   if (videoRef.value && props.participant.stream) {
-    videoRef.value.srcObject = props.participant.stream
+    if (videoRef.value.srcObject !== props.participant.stream) {
+      videoRef.value.srcObject = props.participant.stream
+    }
+    videoRef.value.play().catch((err) => {
+      console.warn('video play error:', err)
+    })
+  }
+}
+
+const setAudioStream = async () => {
+  await nextTick()
+  if (audioRef.value && props.participant.stream) {
+    if (audioRef.value.srcObject !== props.participant.stream) {
+      audioRef.value.srcObject = props.participant.stream
+    }
+    audioRef.value.muted = props.participant.muted
+    audioRef.value.play().catch((err) => {
+      console.warn('audio play error:', err)
+    })
+    if (props.participant.id == 0) {
+      audioRef.value.muted = true
+    }
   }
 }
 
 const setVideoRef = (el: Element | ComponentPublicInstance | null) => {
   videoRef.value = el instanceof HTMLVideoElement ? el : null
-  if (videoRef.value) setStream()
+  if (videoRef.value) setVideoStream()
 }
 
-watch(() => props.participant.stream, setStream)
+const setAudioRef = (el: Element | ComponentPublicInstance | null) => {
+  audioRef.value = el instanceof HTMLAudioElement ? el : null
+  if (audioRef.value) setAudioStream()
+}
+
+watch(() => props.participant.stream, setVideoStream)
+watch(() => [props.participant.muted, props.participant.stream], setAudioStream)
+watch(
+  () => props.participant.cameraOff,
+  async (off) => {
+    if (!off) await setVideoStream()
+  },
+)
 </script>
 
 <template>
@@ -46,9 +81,10 @@ watch(() => props.participant.stream, setStream)
         class="w-full h-full bg-black object-cover"
         autoplay
         playsinline
-        :muted="participant.id === 0"
+        muted
       ></video>
     </div>
+    <audio :ref="setAudioRef" autoplay playsinline muted />
 
     <!-- Participant info -->
     <div
@@ -57,7 +93,12 @@ watch(() => props.participant.stream, setStream)
       <span class="truncate">{{ participant.name }}</span>
       <MicOffIcon :size="12" class="sm:hidden" v-if="participant.muted" aria-label="Muted" />
       <MicIcon :size="12" class="sm:hidden" v-else aria-label="Unmuted" />
-      <MicOffIcon :size="14" class="hidden sm:block md:hidden" v-if="participant.muted" aria-label="Muted" />
+      <MicOffIcon
+        :size="14"
+        class="hidden sm:block md:hidden"
+        v-if="participant.muted"
+        aria-label="Muted"
+      />
       <MicIcon :size="14" class="hidden sm:block md:hidden" v-else aria-label="Unmuted" />
       <MicOffIcon :size="15" class="hidden md:block" v-if="participant.muted" aria-label="Muted" />
       <MicIcon :size="15" class="hidden md:block" v-else aria-label="Unmuted" />
