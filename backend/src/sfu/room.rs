@@ -1,8 +1,6 @@
-// will be moved to sfu
 use crate::models;
 use crate::models::room::Room;
 use crate::sfu::track::{Output, PublishedTrack};
-use arc_swap::ArcSwap;
 use axum::extract::ws::Message;
 use dashmap::DashMap;
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RtpCodecKind};
@@ -22,7 +20,7 @@ pub enum RoomMemberstype {
 pub struct RoomPeer {
     pub user_id: Option<Uuid>,
     pub username: Arc<str>,
-    pub ws_tx: mpsc::Sender<Message>,
+    pub ws_tx: Option<mpsc::Sender<Message>>,
     pub pc: Arc<dyn PeerConnection>,
     ctrl: Arc<dyn DataChannel>,
 }
@@ -31,8 +29,8 @@ impl RoomPeer {
     pub async fn new(
         user_id: Option<Uuid>,
         username: Arc<str>,
-        ws_tx: mpsc::Sender<Message>,
         pc: Arc<dyn PeerConnection>,
+        ws_tx: Option<mpsc::Sender<Message>>,
     ) -> Result<Arc<Self>, webrtc::error::Error> {
         let ctrl = pc.create_data_channel("control", None).await?;
 
@@ -61,6 +59,7 @@ pub struct RoomSfu {
     pub alias: Arc<str>,
     pub peers: DashMap<Uuid, Arc<RoomPeer>>,
     pub tracks: DashMap<Uuid, Vec<Arc<PublishedTrack>>>,
+    pub recording: AtomicBool,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,13 +72,23 @@ pub struct TrackState {
 }
 
 impl RoomSfu {
-    pub fn add_peer(&self, conn_id: Uuid, peer: Arc<RoomPeer>) {
+    pub fn add_peer(&self, conn_id: Uuid, peer: Arc<RoomPeer>) -> bool {
+        if self.peers.iter().any(|p| p.user_id == Some(conn_id)) {
+            return false;
+        }
         self.peers.insert(conn_id, peer);
+        true
     }
 
     pub async fn drop_peer(&self, conn_id: Uuid) {
         self.peers.remove(&conn_id);
-        self.tracks.remove(&conn_id);
+
+        if let Some((_, tracks)) = self.tracks.remove(&conn_id) {
+            for track in tracks {
+                track.stop_recording();
+            }
+        }
+
         for entry in self.tracks.iter_mut() {
             for track in entry.value().iter() {
                 track.drop_output(conn_id).await;
@@ -128,12 +137,16 @@ impl RoomSfu {
             return false;
         }
 
-        self.broadcast_control(track.publisher, &TrackState {
-            event_type: "track_state",
-            from: track.publisher,
-            kind: track.kind.to_string(),
-            muted: !active,
-        }).await;
+        self.broadcast_control(
+            track.publisher,
+            &TrackState {
+                event_type: "track_state",
+                from: track.publisher,
+                kind: track.kind.to_string(),
+                muted: !active,
+            },
+        )
+            .await;
 
         true
     }
@@ -149,6 +162,10 @@ impl RoomSfu {
             .entry(publisher)
             .or_default()
             .push(track.clone());
+
+        if self.recording.load(Ordering::Relaxed) {
+            let _ = crate::sfu::record::start_track_recording(self.id, &track).await;
+        }
 
         let subs: Vec<(Uuid, Arc<RoomPeer>)> = self
             .peers
@@ -194,6 +211,8 @@ impl RoomSfu {
     }
 
     pub async fn unpublish_track(&self, track: &Arc<PublishedTrack>) {
+        track.stop_recording();
+
         if let Some(mut entry) = self.tracks.get_mut(&track.publisher) {
             entry.retain(|t| !Arc::ptr_eq(t, track));
         }
@@ -209,12 +228,16 @@ impl RoomSfu {
             }
         }
 
-        self.broadcast_control(track.publisher, &TrackState {
-            event_type: "track_ended",
-            from: track.publisher,
-            kind: track.kind.to_string(),
-            muted: false,
-        }).await;
+        self.broadcast_control(
+            track.publisher,
+            &TrackState {
+                event_type: "track_ended",
+                from: track.publisher,
+                kind: track.kind.to_string(),
+                muted: false,
+            },
+        )
+            .await;
     }
 
     pub fn broadcast(&self, conn_id: Uuid, msg: Message) -> Vec<Uuid> {
@@ -225,7 +248,11 @@ impl RoomSfu {
                 continue;
             }
 
-            if peer.ws_tx.try_send(msg.clone()).is_err() {
+            let Some(ws_tx) = peer.ws_tx.clone() else {
+                continue;
+            };
+
+            if ws_tx.try_send(msg.clone()).is_err() {
                 warn!(
                     "broadcast to {} failed, ws queue full or closed",
                     peer.key()
@@ -267,14 +294,17 @@ impl RoomSfu {
                 continue;
             }
 
-            if peer.ws_tx.try_send(msg.clone()).is_err() {
+            let Some(ws_tx) = peer.ws_tx.clone() else {
+                continue;
+            };
+
+            if ws_tx.try_send(msg.clone()).is_err() {
                 failed.push(peer.key().to_owned());
             }
         }
 
         failed
     }
-
 }
 
 /// send offer to client
@@ -292,7 +322,12 @@ pub async fn renegotiate(peer: &RoomPeer) {
     // TODO: refactor
     // change from ws to control data channel
     let msg = sonic_rs::json!({ "type": "offer", "sdp": desc.sdp }).to_string();
-    if peer.ws_tx.send(Message::Text(msg.into())).await.is_err() {
+
+    let Some(ws_tx) = peer.ws_tx.clone() else {
+        return;
+    };
+
+    if ws_tx.send(Message::Text(msg.into())).await.is_err() {
         warn!("ws closed, drop renegotiation offer");
     }
 }
@@ -307,6 +342,7 @@ impl From<&models::room::Room> for RoomSfu {
             alias: v.alias.to_owned(),
             owner_id: v.owner_id,
             tracks: DashMap::new(),
+            recording: AtomicBool::new(false),
         }
     }
 }
@@ -322,6 +358,7 @@ mod tests {
             alias: Arc::from("test"),
             peers: DashMap::new(),
             tracks: DashMap::new(),
+            recording: AtomicBool::new(false),
         }
     }
 
