@@ -41,6 +41,9 @@ serde_json = "1"
 headers = "0.4.2"
 jemalloc-ctl = "0.5.4"
 rtc = "0.21.1"
+rtp = "0.17.2"
+oxideav-bitstream = "0.0.3"
+sdp-types = "0.3.0"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = { version = "0.5.4", features = ["stats", "background_threads"] }
