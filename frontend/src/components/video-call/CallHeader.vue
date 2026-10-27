@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { Grid3X3Icon } from 'lucide-vue-next'
+import { Grid3X3Icon, LockIcon } from 'lucide-vue-next'
 
 const props = defineProps<{
   roomTitle: string
@@ -65,7 +65,12 @@ const cancel = () => {
 <template>
   <header class="flex w-full">
     <ul class="w-full flex flex-row items-center px-2 sm:px-6 py-1 justify-between gap-1 min-w-0">
-      <li class="min-w-0 flex-1" title="Double-click to rename" @dblclick="startEditing">
+      <li
+        class="min-w-0 flex-1 flex flex-row gap-x-2 items-center"
+        title="Double-click to rename"
+        @dblclick="startEditing"
+      >
+        <LockIcon :size="18" />
         <input
           v-if="editing"
           ref="inputRef"
@@ -78,7 +83,10 @@ const cancel = () => {
           @keydown.enter.prevent="commit"
           @keydown.esc.prevent="cancel"
         />
-        <h1 v-else class="p-1 sm:p-2 bg-stone-100/20 text-sm sm:text-base font-medium text-gray-950 select-none truncate max-w-full">
+        <h1
+          v-else
+          class="p-1 sm:p-2 bg-stone-100/20 text-sm sm:text-base font-medium text-gray-950 select-none truncate max-w-full"
+        >
           {{ displayTitle }}
         </h1>
       </li>
