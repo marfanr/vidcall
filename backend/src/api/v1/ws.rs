@@ -1,30 +1,23 @@
 use crate::api::WsError;
 use crate::api::server::ServerState;
 use crate::models;
-use crate::sfu::peer::{PcHandler, create_peer};
+use crate::sfu::peer::create_peer;
 use crate::sfu::room::{RoomPeer, RoomSfu};
 use crate::utils::{AccessClaims, verify_jwt};
-use arc_swap::access::Access;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
-use axum_extra::extract::CookieJar;
 use futures_util::{TryFutureExt, sink::SinkExt, stream::StreamExt};
 use http::header::{ORIGIN, USER_AGENT};
 use http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
-use webrtc::peer_connection::crypto::providers::RingProvider;
-use webrtc::peer_connection::{
-    MediaEngine, PeerConnection, PeerConnectionBuilder, RTCConfigurationBuilder,
-    RTCIceCandidateInit, RTCIceServer, RTCSessionDescription, SettingEngineBuilder,
-};
-use webrtc::runtime::TokioRuntime;
+use webrtc::peer_connection::{RTCIceCandidateInit, RTCSessionDescription};
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -147,11 +140,11 @@ impl WsMsg {
             None => username,
         };
 
-        let peer = create_peer(conn_id, self_sink.clone(), room_arc.clone())
+        let peer = create_peer(conn_id, room_arc.clone(), Some(self_sink.clone()))
             .await
             .map_err(|e| WsError(Arc::from(e.to_string())))?;
 
-        let room_peer = RoomPeer::new(user_id, Arc::clone(&username), self_sink.clone(), peer)
+        let room_peer = RoomPeer::new(user_id, Arc::clone(&username), peer, Some(self_sink.clone()))
             .await
             .map_err(|e| WsError(Arc::from(e.to_string())))?;
         room.add_peer(conn_id, room_peer);
