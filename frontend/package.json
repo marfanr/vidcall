@@ -24,6 +24,7 @@
     "async-validator": "^4.2.5",
     "axios": "^1.20.0",
     "change-case": "^5.4.4",
+    "crypto-js": "^4.2.0",
     "drauu": "^1.0.0",
     "focus-trap": "^8.2.3",
     "fuse.js": "^7.5.0",
