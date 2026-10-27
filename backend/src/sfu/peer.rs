@@ -24,8 +24,8 @@ static PROVIDER: OnceLock<Arc<RingProvider>> = OnceLock::new();
 
 pub async fn create_peer(
     conn_id: Uuid,
-    self_sink: mpsc::Sender<Message>,
     room: Arc<RoomSfu>,
+    self_sink: Option<mpsc::Sender<Message>>,
 ) -> Result<Arc<dyn PeerConnection>, String> {
     let provider = PROVIDER
         .get()
@@ -60,8 +60,8 @@ pub async fn create_peer(
         .with_media_engine(media_engine)
         .with_runtime(Arc::new(TokioRuntime))
         .with_handler(Arc::new(PcHandler {
-            conn_id: conn_id,
-            ws_conn: self_sink.clone(),
+            conn_id,
+            ws_conn: self_sink,
             room: room.clone(),
         }))
         .with_udp_addrs(vec!["0.0.0.0:0"])
@@ -75,7 +75,7 @@ pub async fn create_peer(
 
 pub struct PcHandler {
     pub conn_id: Uuid,
-    pub ws_conn: mpsc::Sender<Message>,
+    pub ws_conn: Option<mpsc::Sender<Message>>,
     pub room: Arc<RoomSfu>,
 }
 
@@ -98,8 +98,11 @@ impl PeerConnectionEventHandler for PcHandler {
             "usernameFragment": &init.username_fragment,
         })
         .to_string();
-        if self.ws_conn.send(Message::Text(msg.into())).await.is_err() {
-            warn!("ws closed, drop ice candidate");
+
+        if let Some(ws_conn) = self.ws_conn.clone() {
+            if ws_conn.send(Message::Text(msg.into())).await.is_err() {
+                warn!("ws closed, drop ice candidate");
+            }
         }
     }
 
@@ -146,18 +149,21 @@ impl PeerConnectionEventHandler for PcHandler {
             warn!("conn {con_id}: track without ssrc");
             return;
         };
+
         let kind = track.kind().await;
         let Some(codec) = track.codec(ssrc).await else {
             warn!("conn {con_id}: no codec for ssrc {ssrc}");
             return;
         };
 
+        
+
         let published = room.publish_track(con_id, kind, codec).await;
         let is_video = kind == rtc::rtp_transceiver::rtp_sender::RtpCodecKind::Video;
 
         tokio::spawn(async move {
             let mut count: u64 = 0;
-            let idle_timeout = Duration::from_millis(1500);
+            let idle_timeout = Duration::from_millis(500);
             let pli_interval = Duration::from_millis(250);
             let pli_window = Duration::from_secs(3);
 
@@ -197,11 +203,14 @@ impl PeerConnectionEventHandler for PcHandler {
                     info!("conn {con_id}: track idle, paused");
                 }
 
+                let wants_keyframe = published.is_recording() && !published.has_keyframe();
+
                 if is_video
                     && published.is_active()
-                    && Instant::now() < pli_until
+                    && (Instant::now() < pli_until || wants_keyframe)
                     && last_pli.map_or(true, |t| t.elapsed() >= pli_interval)
                 {
+                    /// requesting new keyframes from client peer
                     let pli = Box::new(
                         rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
                             sender_ssrc: 0,

@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
+use crate::sfu::record::start_record_bot;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -21,6 +22,8 @@ pub async fn handle_data_channel(
     match json {
         Ok(ControlMessage::Record) => {
             info!("Received data {label}");
+            start_record_bot(room.clone()).await;
+
         }
         Err(_) => {}
     };
