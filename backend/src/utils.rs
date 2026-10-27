@@ -174,3 +174,22 @@ pub fn validate_uuid(id: &str) -> Result<(), ValidationError> {
         .map_err(|_| ValidationError::new("invalid uuid"))
         .map(|_| ())
 }
+
+// H264
+pub fn describe_nal(payload: &[u8]) -> Option<String> {
+    let b0 = *payload.first()?;
+    let h = oxideav_bitstream::h264::nal_header(b0);
+
+    match h.2 {
+        t @ 1..=23 => Some(format!("single type={t}")),
+        rtp::codecs::h264::STAPA_NALU_TYPE => Some("STAP-A".to_string()),
+        rtp::codecs::h264::FUA_NALU_TYPE => {
+            let fu = *payload.get(1)?;
+            let start = fu & 0x80 != 0;
+            let end = fu & 0x40 != 0;
+            let t = fu & 0x1f;
+            Some(format!("FU-A type={t} start={start} end={end}"))
+        }
+        t => Some(format!("other type={t}")),
+    }
+}
